@@ -1,0 +1,8 @@
+# Rust
+/target
+
+# Temp files
+/test
+
+# Other
+.DS_Store
