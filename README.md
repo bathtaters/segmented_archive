@@ -1,16 +1,22 @@
-# Segmented Backup Tool
+# Segmented Archive Tool
 
-This will go through a series of folders, archive their contents (splitting based on a max filesize), then run a script on each archived file.
+This will go through a series of folders, archive each segment into a tar.gz archive (splitting based on a max filesize), and run a script on each archive.
 
-It will attempt to keep memory usage minimal by streaming files and executing post-scripts one-by-one. If you wish to keep disk usage to a minimum, you may remove the archive in your post-script once you're done processing it.
-
-This was created to help with incremental backups to cold storage services. For this you would use the post-script to upload each file part before deleting it.
+- Memory usage is minimized by streaming files and executing post-scripts one-by-one.
+- Additionally disk usage can be minimized by removing the archive at the end of your post-script.
+- If one segment is the child of another, it will be excluded from the parent segment.
+- Split files are suffixed with `.part###`. Example: `archive.tar.gz` => `archive.tar.gz.part001`, `archive.tar.gz.part002`.
+- This was created to help with incremental backups to cold storage services. For this you would create a post-script to upload each file part as it is created.
 
 ## Usage
 
-1. Generate `config.toml` (Based on `example_config.toml`).
-2. Create a `post.sh` to execute for each generated archive (Based on `example_post.sh`).
-3. Execute the program, with the `config.toml` file as the only argument.
+1. Generate `config.toml`.
+   - Based on [`example_config.toml`](./example_config.toml).
+2. Create a `post.sh` that will run for each generated archive.
+   - Based on [`example_post.sh`](./example_post.sh).
+   - **Don't forget to `chmod +x post.sh`**
+   - Return: 0 = success, +int = warning in log, -int = exit with an error.
+3. Run the program, with `config.toml` as the only argument.
 
 ```bash
 ./segment_backup ./config.toml
