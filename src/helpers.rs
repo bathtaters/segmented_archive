@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::io;
 use std::fs;
-use log::info;
+use log::{info,warn};
 use crate::rolling_writer::RollingWriter;
 
 const PATH_FILE: &str = ".seg_bkp.path";
@@ -34,17 +34,12 @@ pub fn create_archive(
     let mut tar = tar::Builder::new(enc);
 
     // Inject path file into archive
-    let path_str = match root_path {
-        None => src_dir.to_str().ok_or_else(|| anyhow!("Invalid path string"))?,
-        // Strip root path from source directory (If provided)
-        Some(root) => src_dir.strip_prefix(root).context("Invalid root path")?
-            .to_str().context("Invalid path string")?,
-    };
+    let path_str = strip_root(src_dir, root_path)?;
     let mut header = tar::Header::new_gnu();
     header.set_path(PATH_FILE)?;
     header.set_size(path_str.len() as u64);
     header.set_mode(0o644);
-    header.set_cksum();
+    header.set_cksum(); // Removing this line will cause the archive to be corrupted
     tar.append(&header, path_str.as_bytes())?;
 
     append_dir_contents(&mut tar, src_dir, src_dir, exclusions)?;
@@ -94,7 +89,7 @@ fn append_dir_contents(
             header.set_path(relative_path)?;
             header.set_entry_type(tar::EntryType::Directory);
             header.set_mode(0o755);
-            header.set_cksum();
+            header.set_cksum(); // Removing this line will cause the archive to be corrupted
             tar.append(&header, &[] as &[u8])?;
         }
     }
@@ -123,7 +118,7 @@ fn execute_post_script(script_path: PathBuf, arg: &str) -> io::Result<i32> {
                 info!("Post-script finished successfully.");
                 Ok(0)
             } else if exit_code < 128 {
-                info!("Post-script finished with error: {}", status);
+                warn!("Post-script finished with error: {}", status);
                 Ok(exit_code)
             } else {
                 Err(io::Error::new(io::ErrorKind::Other, format!("Post-script panicked: {}", status)))
@@ -143,6 +138,67 @@ fn execute_post_script(script_path: PathBuf, arg: &str) -> io::Result<i32> {
             }
             return Err(io::Error::new(io::ErrorKind::Other, e.to_string()))
         }
+    }
+}
+
+/// --- Helper Helpers --- ///
+
+/// Strip the root path from a given path -- extracted to simplify testing
+fn strip_root(path: &Path, root_path: &Option<PathBuf>) -> Result<String> {
+    Ok(match root_path {
+        None => path.to_str()
+            .ok_or_else(|| anyhow!("Invalid path string"))?
+            .to_string(),
+        // Strip root path from source directory (If provided)
+        Some(root) => path.strip_prefix(root)
+            .context("Invalid root path")?
+            .to_str()
+            .context("Invalid path string")?
+            .to_string(),
+    })
+}
+
+/// --- Tests --- ///
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn test_path_stripping_with_root() {
+        let src_dir = PathBuf::from("/tmp/files/test_dir");
+        let root_path = Some(PathBuf::from("/tmp/files"));
+        
+        let path_str = strip_root(&src_dir, &root_path).unwrap();
+        assert_eq!(path_str, "test_dir");
+    }
+
+    #[test]
+    fn test_path_stripping_without_root() {
+        let src_dir = PathBuf::from("/tmp/files/test_dir");
+        let root_path: Option<PathBuf> = None;
+        
+        let path_str = strip_root(&src_dir, &root_path).unwrap();
+        assert_eq!(path_str, "/tmp/files/test_dir");
+    }
+
+    #[test]
+    fn test_path_stripping_nested() {
+        let src_dir = PathBuf::from("/tmp/files/nested/deep/path");
+        let root_path = Some(PathBuf::from("/tmp/files"));
+        
+        let path_str = strip_root(&src_dir, &root_path).unwrap();
+        assert_eq!(path_str, "nested/deep/path");
+    }
+
+    #[test]
+    fn test_path_stripping_exact_match() {
+        let src_dir = PathBuf::from("/tmp/files");
+        let root_path = Some(PathBuf::from("/tmp/files"));
+        
+        let path_str = strip_root(&src_dir, &root_path).unwrap();
+        assert!(path_str == "");
     }
 }
 

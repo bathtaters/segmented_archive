@@ -82,12 +82,7 @@ fn main() -> Result<()> {
         }
 
         // List paths to exclude from the current segment
-        let exclusions: Vec<&PathBuf> = all_paths.iter()
-            .filter(|&other_path| {
-                path != *other_path && other_path.starts_with(path)
-            })
-            .copied()
-            .collect();
+        let exclusions = get_exclusions(&all_paths, path);
 
         // Create the archive
         let archive_path = output_path.join(format!("{}.tar.gz", name));
@@ -109,5 +104,88 @@ fn main() -> Result<()> {
 
     info!("Backup process finished.");
     Ok(())
+}
+
+/// Calculate paths to exclude -- extracted to simplify testing
+fn get_exclusions<'a>(all_paths: &'a HashSet<&PathBuf>, path: &PathBuf) -> Vec<&'a PathBuf> {
+    all_paths.iter()
+        .filter(|&other_path| { path != *other_path && other_path.starts_with(path) })
+        .copied()
+        .collect()
+}
+
+/// --- Tests --- ///
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    #[test]
+    fn test_exclusion_logic_no_exclusions() {
+        let path1 = PathBuf::from("/tmp/test1");
+        let path2 = PathBuf::from("/tmp/test2");
+        let all_paths: HashSet<&PathBuf> = [&path1, &path2].iter().copied().collect();
+        
+        let exclusions = get_exclusions(&all_paths, &path1);
+        assert_eq!(exclusions.len(), 0);
+    }
+
+    #[test]
+    fn test_exclusion_logic_nested_path() {
+        let path1 = PathBuf::from("/tmp/test1");
+        let path2 = PathBuf::from("/tmp/test1/nested");
+        let all_paths: HashSet<&PathBuf> = [&path1, &path2].iter().copied().collect();
+        
+        let exclusions = get_exclusions(&all_paths, &path1);
+        assert_eq!(exclusions.len(), 1);
+        assert!(exclusions.contains(&&path2));
+    }
+
+    #[test]
+    fn test_exclusion_logic_deeply_nested() {
+        let path1 = PathBuf::from("/tmp/test1");
+        let path2 = PathBuf::from("/tmp/test1/nested");
+        let path3 = PathBuf::from("/tmp/test1/nested/deep");
+        let all_paths: HashSet<&PathBuf> = [&path1, &path2, &path3].iter().copied().collect();
+        
+        let exclusions = get_exclusions(&all_paths, &path1);
+        assert_eq!(exclusions.len(), 2);
+        assert!(exclusions.contains(&&path2));
+        assert!(exclusions.contains(&&path3));
+    }
+
+    #[test]
+    fn test_exclusion_logic_sibling_paths() {
+        let path1 = PathBuf::from("/tmp/test1");
+        let path2 = PathBuf::from("/tmp/test1/sub1");
+        let path3 = PathBuf::from("/tmp/test1/sub2");
+        let all_paths: HashSet<&PathBuf> = [&path1, &path2, &path3].iter().copied().collect();
+        
+        let exclusions = get_exclusions(&all_paths, &path1);
+        assert_eq!(exclusions.len(), 2);
+        assert!(exclusions.contains(&&path2));
+        assert!(exclusions.contains(&&path3));
+    }
+
+    #[test]
+    fn test_exclusion_logic_self_not_excluded() {
+        let path1 = PathBuf::from("/tmp/test1");
+        let all_paths: HashSet<&PathBuf> = [&path1].iter().copied().collect();
+        
+        let exclusions = get_exclusions(&all_paths, &path1);
+        assert_eq!(exclusions.len(), 0);
+    }
+
+    #[test]
+    fn test_exclusion_logic_unrelated_paths() {
+        let path1 = PathBuf::from("/tmp/test1");
+        let path2 = PathBuf::from("/tmp/test2");
+        let path3 = PathBuf::from("/tmp/test3");
+        let all_paths: HashSet<&PathBuf> = [&path1, &path2, &path3].iter().copied().collect();
+        
+        let exclusions = get_exclusions(&all_paths, &path1);
+        assert_eq!(exclusions.len(), 0);
+    }
 }
 

@@ -138,3 +138,216 @@ impl Write for RollingWriter {
         Ok(())
     }
 }
+
+
+/// --- Tests --- ///
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::io::Read;
+
+    fn get_test_dir(test_name: &str) -> PathBuf {
+        PathBuf::from(format!("/tmp/rolling_writer_test_{}", test_name))
+    }
+
+    fn cleanup_test_dir(test_name: &str) {
+        let _ = fs::remove_dir_all(get_test_dir(test_name));
+    }
+
+    fn setup_test_dir(test_name: &str) {
+        cleanup_test_dir(test_name);
+        fs::create_dir_all(&get_test_dir(test_name)).unwrap();
+    }
+
+    #[test]
+    fn test_rolling_writer_no_max_size() {
+        let test_name = "no_max_size";
+        setup_test_dir(test_name);
+        
+        let base_path = get_test_dir(test_name).join("test.tar.gz");
+        let mut writer = RollingWriter::new(base_path.clone(), None).unwrap();
+        
+        let data = b"Hello, World!";
+        writer.write_all(data).unwrap();
+        writer.finalize().unwrap();
+        
+        // Should create a single file with the base name (no .part001)
+        assert!(base_path.exists());
+        let mut contents = Vec::new();
+        File::open(&base_path).unwrap().read_to_end(&mut contents).unwrap();
+        assert_eq!(contents, data);
+        
+        cleanup_test_dir(test_name);
+    }
+
+    #[test]
+    fn test_rolling_writer_with_max_size_single_part() {
+        let test_name = "single_part";
+        setup_test_dir(test_name);
+        
+        let base_path = get_test_dir(test_name).join("test.tar.gz");
+        let mut writer = RollingWriter::new(base_path.clone(), Some(1000)).unwrap();
+        
+        let data = b"Small data";
+        writer.write_all(data).unwrap();
+        writer.finalize().unwrap();
+        
+        // Single part should be renamed to base_path
+        assert!(base_path.exists());
+        assert!(!get_test_dir(test_name).join("test.tar.gz.part001").exists());
+        
+        let mut contents = Vec::new();
+        File::open(&base_path).unwrap().read_to_end(&mut contents).unwrap();
+        assert_eq!(contents, data);
+        
+        cleanup_test_dir(test_name);
+    }
+
+    #[test]
+    fn test_rolling_writer_with_max_size_multiple_parts() {
+        let test_name = "multiple_parts";
+        setup_test_dir(test_name);
+        
+        let base_path = get_test_dir(test_name).join("test.tar.gz");
+        let max_size = 100;
+        let mut writer = RollingWriter::new(base_path.clone(), Some(max_size)).unwrap();
+        
+        // Write data that exceeds max_size
+        let data = vec![0u8; 250];
+        writer.write_all(&data).unwrap();
+        writer.finalize().unwrap();
+        
+        // Should create multiple part files
+        assert!(get_test_dir(test_name).join("test.tar.gz.part001").exists());
+        assert!(get_test_dir(test_name).join("test.tar.gz.part002").exists());
+        assert!(get_test_dir(test_name).join("test.tar.gz.part003").exists());
+        
+        // Base path should not exist (multiple parts)
+        assert!(!base_path.exists());
+        
+        // Verify total size
+        let mut total_size = 0;
+        for i in 1..=3 {
+            let part_path = get_test_dir(test_name).join(format!("test.tar.gz.part{:03}", i));
+            let size = fs::metadata(&part_path).unwrap().len() as usize;
+            total_size += size;
+        }
+        assert_eq!(total_size, 250);
+        
+        cleanup_test_dir(test_name);
+    }
+
+    #[test]
+    fn test_rolling_writer_exact_max_size_boundary() {
+        let test_name = "exact_boundary";
+        setup_test_dir(test_name);
+        
+        let base_path = get_test_dir(test_name).join("test.tar.gz");
+        let max_size = 50;
+        let mut writer = RollingWriter::new(base_path.clone(), Some(max_size)).unwrap();
+        
+        // Write exactly max_size bytes
+        let data = vec![0u8; max_size];
+        writer.write_all(&data).unwrap();
+        writer.finalize().unwrap();
+        
+        // Should create a single part (exactly at boundary)
+        assert!(base_path.exists());
+        assert!(!get_test_dir(test_name).join("test.tar.gz.part001").exists());
+        
+        cleanup_test_dir(test_name);
+    }
+
+    #[test]
+    fn test_rolling_writer_spanning_write() {
+        let test_name = "spanning";
+        setup_test_dir(test_name);
+        
+        let base_path = get_test_dir(test_name).join("test.tar.gz");
+        let max_size = 50;
+        let mut writer = RollingWriter::new(base_path.clone(), Some(max_size)).unwrap();
+        
+        // Write data that spans exactly 2 parts
+        let data = vec![0u8; 75];
+        writer.write_all(&data).unwrap();
+        writer.finalize().unwrap();
+        
+        // Should create 2 part files
+        assert!(get_test_dir(test_name).join("test.tar.gz.part001").exists());
+        assert!(get_test_dir(test_name).join("test.tar.gz.part002").exists());
+        assert!(!get_test_dir(test_name).join("test.tar.gz.part003").exists());
+        
+        cleanup_test_dir(test_name);
+    }
+
+    #[test]
+    fn test_rolling_writer_listener_callback() {
+        let test_name = "callback";
+        setup_test_dir(test_name);
+        
+        let base_path = get_test_dir(test_name).join("test.tar.gz");
+        let max_size = 50;
+        let mut writer = RollingWriter::new(base_path.clone(), Some(max_size)).unwrap();
+        
+        use std::sync::{Arc, Mutex};
+        let callback_calls = Arc::new(Mutex::new(Vec::new()));
+        let callback_calls_clone = callback_calls.clone();
+        writer.set_listener(move |filename| {
+            callback_calls_clone.lock().unwrap().push(filename.clone());
+            Ok(0)
+        });
+        
+        // Write data that spans multiple parts
+        let data = vec![0u8; 120];
+        writer.write_all(&data).unwrap();
+        writer.finalize().unwrap();
+        
+        // Callback should be called for each finalized part
+        let calls = callback_calls.lock().unwrap();
+        assert_eq!(calls.len(), 3); // part001, part002, part003
+        
+        cleanup_test_dir(test_name);
+    }
+
+    #[test]
+    fn test_rolling_writer_empty_write() {
+        let test_name = "empty";
+        setup_test_dir(test_name);
+        
+        let base_path = get_test_dir(test_name).join("test.tar.gz");
+        let mut writer = RollingWriter::new(base_path.clone(), Some(100)).unwrap();
+        
+        // Write empty data
+        writer.write_all(&[]).unwrap();
+        writer.finalize().unwrap();
+        
+        // Should still create a file (even if empty)
+        assert!(base_path.exists());
+        
+        cleanup_test_dir(test_name);
+    }
+
+    #[test]
+    fn test_rolling_writer_multiple_writes() {
+        let test_name = "multiple_writes";
+        setup_test_dir(test_name);
+        
+        let base_path = get_test_dir(test_name).join("test.tar.gz");
+        let max_size = 50;
+        let mut writer = RollingWriter::new(base_path.clone(), Some(max_size)).unwrap();
+        
+        // Write in multiple chunks
+        writer.write_all(&vec![0u8; 30]).unwrap();
+        writer.write_all(&vec![1u8; 30]).unwrap();
+        writer.write_all(&vec![2u8; 30]).unwrap();
+        writer.finalize().unwrap();
+        
+        // Should create 2 parts (30 + 30 + 30 = 90, but first part gets 50, second gets 40)
+        assert!(get_test_dir(test_name).join("test.tar.gz.part001").exists());
+        assert!(get_test_dir(test_name).join("test.tar.gz.part002").exists());
+        
+        cleanup_test_dir(test_name);
+    }
+}
