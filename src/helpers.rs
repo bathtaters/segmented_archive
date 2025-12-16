@@ -51,7 +51,7 @@ pub fn create_archive(
 
     tar.finish().context("Failed to finalize tar archive")?;
     let mut writer = tar.into_inner()?.finish().context("Failed to finalize Gzip encoding")?;
-    writer.finalize().context("Failed to finalize the last archive part")?;
+    writer.finalize()?;
     Ok(())
 }
 
@@ -131,7 +131,17 @@ fn execute_post_script(script_path: PathBuf, arg: &str) -> io::Result<i32> {
         }
 
         Err(e) => {
-            return Err(io::Error::new(io::ErrorKind::Other, e.to_string()));
+            if e.kind() == io::ErrorKind::PermissionDenied {
+                // Handle common errors
+                let can_read = fs::metadata(&script_path).is_ok();
+                let error_msg = if can_read {
+                    format!("{} is missing execute permission.", script_path.display())
+                } else {
+                    format!("{} cannot be accessed due to permission issues.", script_path.display())
+                };
+                return Err(io::Error::new(io::ErrorKind::Other, error_msg))
+            }
+            return Err(io::Error::new(io::ErrorKind::Other, e.to_string()))
         }
     }
 }

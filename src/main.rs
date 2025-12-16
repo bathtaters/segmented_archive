@@ -101,8 +101,8 @@ fn main() -> Result<()> {
             max_size_bytes,
             post_script.to_owned(),
         ) {
-            error!("Failed to create archive for {}: {}", name, e);
-            continue;
+            error!("Failed on segment '{}': {}", name, e);
+            return Err(anyhow!("Failed on segment '{}'", name));
         }
         info!("Successfully created archive: {:?}", archive_path);
     }
