@@ -2,7 +2,7 @@
 /target
 
 # Temp files
-/test
+/tmp
 
 # Other
 .DS_Store
