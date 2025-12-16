@@ -1,7 +1,7 @@
-output_path = "/tmp/segment_backup/"
+output_path = "/tmp/segmented_archive/"
 root_path = "/home/user" # Optional: Save segments relative to this path
 post_script = "./example_config.sh"
-log_file = "/tmp/segment_backup/segment_backup_%D.log"
+log_file = "/tmp/segmented_archive/segmented_archive_%D.log"
 compression_level = 6 # Tar/GZip compression level: 0 (No compression) - 9 (Most compression)
 max_size_bytes = 2147483648 # Split files at this many bytes (2GB)
 

@@ -1,5 +1,5 @@
 [package]
-name = "segment_backup"
+name = "segmented_archive"
 version = "1.0.0"
 edition = "2024"
 

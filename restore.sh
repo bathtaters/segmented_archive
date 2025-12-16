@@ -7,7 +7,7 @@ set -e
 shopt -s nullglob
 
 # Constants
-TEMP_PATH="/tmp/segment_backup" # Temporary path to extract tar files
+TEMP_PATH="/tmp/segmented_archive" # Temporary path to extract tar files
 EXT=".tar.gz"                   # Extension of the tar files
 PATH_FILE=".seg_bkp.path"       # Path file used to place extracted files
 REMOVE_TAR_FILES=true           # Whether to remove tar files after extraction

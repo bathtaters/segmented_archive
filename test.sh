@@ -5,7 +5,7 @@
 set -e
 
 # Test file locations
-TEST_DIR="/tmp/segment_backup/test"
+TEST_DIR="/tmp/segmented_archive/test"
 TEST_CFG="$TEST_DIR/test.toml"
 
 # Get the path to the script itself
