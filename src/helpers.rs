@@ -8,7 +8,7 @@ use std::fs;
 use log::{info,warn};
 use crate::rolling_writer::RollingWriter;
 
-const PATH_FILE: &str = ".seg_bkp.path";
+const PATH_FILE: &str = ".seg_arc.path";
 
 /// Archives a directory, appending a path file and applying exclusions.
 pub fn create_archive(
