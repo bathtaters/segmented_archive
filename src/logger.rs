@@ -1,5 +1,7 @@
 use anyhow::{Context, Result};
 use std::path::{PathBuf};
+use std::fs::OpenOptions;
+use std::io::Write;
 use chrono::Local;
 use log::{info, LevelFilter};
 use log4rs::Handle;
@@ -38,6 +40,13 @@ pub fn set_log_path(log_handle: &Handle, log_path: &PathBuf, log_level: LevelFil
 
     // Re-initialize logger with the new file configuration
     log_handle.set_config(file_config);
+    
+    // Write separator line and backup start message to the log file
+    if let Ok(mut file) = OpenOptions::new().append(true).open(log_path) {
+        let _ = writeln!(file, "--------------------------------");
+    }
+    info!("Backup process started.");
+    
     Ok(())
 }
 
