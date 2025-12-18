@@ -1,5 +1,6 @@
 pub(crate) mod rolling_writer;
 pub(crate) mod logger;
+pub(crate) mod hasher;
 pub(crate) mod helpers;
 
 use anyhow::{Context, Result, anyhow};
@@ -9,6 +10,7 @@ use std::fs;
 use std::env;
 use log::{info, error, LevelFilter};
 use crate::logger::{init_logger, set_log_path};
+use crate::hasher::{compute_segment_hash, read_hash_file, write_hash_file};
 use crate::helpers::{create_archive};
 
 // --- Structs ---
@@ -21,6 +23,7 @@ struct Config {
     output_path: Option<PathBuf>,
     root_path: Option<PathBuf>,
     post_script: Option<PathBuf>,
+    hash_file: Option<PathBuf>,
     log_file: Option<PathBuf>,
     compression_level: Option<u32>,
     max_size_bytes: Option<usize>,
@@ -46,6 +49,7 @@ fn main() -> Result<()> {
         output_path,
         root_path,
         post_script,
+        hash_file,
         log_file,
         compression_level,
         max_size_bytes,
@@ -73,6 +77,13 @@ fn main() -> Result<()> {
 
     let all_paths: HashSet<&PathBuf> = segments.values().collect();
 
+    // Load existing hash file
+    let mut segment_hashes = if let Some(hash_file) = &hash_file {
+        read_hash_file(hash_file).context("Failed to read hash file")?
+    } else {
+        HashMap::<String, String>::new()
+    };
+
     // ---- Process each section ---- //
     for (name, path) in &segments {
         info!("--- Processing Section: {} at {:?} ---", name, path);
@@ -83,6 +94,23 @@ fn main() -> Result<()> {
 
         // List paths to exclude from the current segment
         let exclusions = get_exclusions(&all_paths, path);
+
+        // Compute and store segment hash
+        match compute_segment_hash(path, &exclusions) {
+            Ok(hash) => {
+                if segment_hashes.get(name) == Some(&hash) {
+                    info!("Segment '{}' has not changed, skipping", name);
+                    continue;
+                } else {
+                    info!("Computed new hash for segment '{}'", name);
+                }
+                segment_hashes.insert(name.clone(), hash.clone());
+            }
+            Err(e) => {
+                error!("Failed to compute hash for segment '{}': {}", name, e);
+                return Err(anyhow!("Failed to compute hash for segment '{}'", name))
+            }
+        }
 
         // Create the archive
         let archive_path = output_path.join(format!("{}.tar.gz", name));
@@ -100,6 +128,15 @@ fn main() -> Result<()> {
             return Err(anyhow!("Failed on segment '{}'", name));
         }
         info!("Successfully created archive: {:?}", archive_path);
+    }
+
+    // Write updated hash file
+    if let Some(hash_file) = hash_file {
+        if let Err(e) = write_hash_file(&hash_file, &segment_hashes) {
+            error!("Failed to write hash file: {}", e);
+            return Err(anyhow!("Failed to write hash file"));
+        }
+        info!("Updated hash file: {:?}", hash_file);
     }
 
     info!("Backup process finished.");

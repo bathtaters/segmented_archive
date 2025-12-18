@@ -43,8 +43,9 @@ echo "This is a hidden file" > "$TEST_DIR/files/test_dir_2/.hidden_file.txt"
 echo "output_path = \"$TEST_DIR/archives\"" > "$TEST_CFG"
 echo "root_path = \"$TEST_DIR/files\"" >> "$TEST_CFG"
 echo "post_script = \"$TEST_DIR/test_script.sh\"" >> "$TEST_CFG"
+echo "hash_file = \"$TEST_DIR/logs/test.hash\"" >> "$TEST_CFG"
 echo "log_file = \"$TEST_DIR/logs/test_log_%D.log\"" >> "$TEST_CFG"
-echo "compression_level = 9" >> "$TEST_CFG"
+echo "compression_level = 8" >> "$TEST_CFG"
 echo "max_size_bytes = 10485760" >> "$TEST_CFG"
 echo "" >> "$TEST_CFG"
 echo "[segments]" >> "$TEST_CFG"
@@ -98,8 +99,18 @@ diff -r "$TEST_DIR/files" "$TEST_DIR/restored"
 echo
 echo " --- MANUALLY INSPECT FILES --- "
 open "$TEST_DIR"
-read -p "Press Enter to clean up test files"
+read -p "Press Enter to continue"
 
+echo
+echo " --- SKIPS UNCHANGED SEGMENTS --- "
+echo "x" >> "$TEST_DIR/files/test_file_1.txt"
+rm -Rf "$TEST_DIR/archives"
+cargo run "$TEST_CFG"
+ls -l "$TEST_DIR/archives"
+echo "(You should only see test_base.tar.gz above)"
+
+echo
+echo " --- CLEANING UP TEST FILES --- "
 rm -Rf "$TEST_DIR"
 
 echo

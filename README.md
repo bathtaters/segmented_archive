@@ -7,6 +7,7 @@ This will go through a series of folders, archive each segment into a tar.gz arc
 - If one segment is the child of another, it will be excluded from the parent segment.
 - Split files are suffixed with `.part###`. Example: `archive.tar.gz` => `archive.tar.gz.part001`, `archive.tar.gz.part002`.
 - This was created to help with incremental backups to cold storage services. For this you would create a post-script to upload each file part as it is created.
+- Can optionally compare segment hashes to a previously generated hash file and only archive segments that have changed.
 
 ## Usage
 
@@ -34,6 +35,7 @@ All fields (unless otherwise noted) are optional strings.
 - **`output_path`**: Folder to save all generated archives in _(Default: `/tmp`)_.
 - **`root_path`**: Relative base path to use when restoring _(Default: `/`)_.
 - **`post_script`**: Script to execute after each file segment is closed _(Default: No script)_.
+- **`hash_file`**: Path to an existing or future hash file. This will be used to only archive changed segments. _(Default: Archive all)_.
 - **`log_file`**: Path to generate logs. `%D` is replaced with a date-stamp _(Default: No log)_.
 - **`compression_level`**: Level of GZip compression to use _(`0 - 9 uint`, Default: `6`)_.
 - **`max_size_bytes`**: Maximum file size before a split, in bytes _(`uint`, Default: No splitting)_.
