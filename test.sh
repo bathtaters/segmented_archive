@@ -35,6 +35,9 @@ done
 
 dd if=/dev/urandom of="$TEST_DIR/files/test_dir_1/test_file_large_01.bin" bs=1M count=50
 
+echo "This is a file that should be ignored" > "$TEST_DIR/files/test_dir_5/test_file.ignore"
+echo "This is a file that should be ignored" > "$TEST_DIR/files/test_dir_7/test_file.ignore"
+
 mkdir -p "$TEST_DIR/files/test_dir_2/nest_a/nest_b/nest_c"
 echo "This is a test file in a nested directory" > "$TEST_DIR/files/test_dir_2/nest_a/nest_b/test_file_nested.txt"
 echo "This is a hidden file" > "$TEST_DIR/files/test_dir_2/.hidden_file.txt"
@@ -47,6 +50,7 @@ echo "hash_file = \"$TEST_DIR/logs/test.hash\"" >> "$TEST_CFG"
 echo "log_file = \"$TEST_DIR/logs/test_log_%D.log\"" >> "$TEST_CFG"
 echo "compression_level = 8" >> "$TEST_CFG"
 echo "max_size_bytes = 10485760" >> "$TEST_CFG"
+echo "ignore = [\"$TEST_DIR/files/test_dir_4\", \"*.ignore\"]" >> "$TEST_CFG"
 echo "" >> "$TEST_CFG"
 echo "[segments]" >> "$TEST_CFG"
 echo "test_base = \"$TEST_DIR/files\"" >> "$TEST_CFG"
@@ -92,14 +96,11 @@ echo " --- RESTORING ARCHIVES --- "
 # Re-run to rebuild archive files
 cargo run "$TEST_CFG"
 
-echo
-echo " --- DIFF BETWEEN ORIGINAL AND RESTORED FILES --- "
-diff -r "$TEST_DIR/files" "$TEST_DIR/restored"
 
 echo
-echo " --- MANUALLY INSPECT FILES --- "
-open "$TEST_DIR"
-read -p "Press Enter to continue"
+echo " --- DIFF BETWEEN ORIGINAL AND RESTORED FILES --- "
+diff -r "$TEST_DIR/files" "$TEST_DIR/restored" || true
+echo "(You should see: 'test_dir_4' and 'test_file.ignore' from dirs 5 & 7)"
 
 echo
 echo " --- SKIPS UNCHANGED SEGMENTS --- "
@@ -108,6 +109,11 @@ rm -Rf "$TEST_DIR/archives"
 cargo run "$TEST_CFG"
 ls -l "$TEST_DIR/archives"
 echo "(You should only see test_base.tar.gz above)"
+
+echo
+echo " --- MANUALLY INSPECT FILES --- "
+open "$TEST_DIR"
+read -p "Press Enter to continue"
 
 echo
 echo " --- CLEANING UP TEST FILES --- "

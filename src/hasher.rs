@@ -5,16 +5,17 @@ use std::path::{Path, PathBuf};
 use std::io::{BufReader, BufRead, Write, Read};
 use std::fs;
 use log::{warn};
+use globset::GlobSet;
 
 
 /// Computes a hash for a segment by hashing all files (excluding folders and exclusions)
 /// Uses xxHash (xxh3) for individual files, then XORs all hashes together
 /// Includes file paths in the hash to detect renames and moves
-pub fn compute_segment_hash(src_dir: &Path, exclusions: &[&PathBuf]) -> Result<String> {
+pub fn compute_segment_hash(src_dir: &Path, exclusions: &[&PathBuf], ignore_patterns: Option<&GlobSet>) -> Result<String> {
     let mut combined_hash: u64 = 0;
     let mut file_count = 0;
 
-    hash_dir_contents(src_dir, src_dir, exclusions, &mut combined_hash, &mut file_count)?;
+    hash_dir_contents(src_dir, src_dir, exclusions, ignore_patterns, &mut combined_hash, &mut file_count)?;
 
     // If no files were found, hash an empty string
     if file_count == 0 {
@@ -32,6 +33,7 @@ fn hash_dir_contents(
     base_dir: &Path,
     current_dir: &Path,
     exclusions: &[&PathBuf],
+    ignore_patterns: Option<&GlobSet>,
     combined_hash: &mut u64,
     file_count: &mut usize,
 ) -> Result<()> {
@@ -44,9 +46,16 @@ fn hash_dir_contents(
             continue;
         }
 
+        // Check if path matches any ignore pattern
+        if let Some(patterns) = ignore_patterns {
+            if patterns.is_match(&path) {
+                continue;
+            }
+        }
+
         if path.is_dir() {
             // Recursively process subdirectories
-            hash_dir_contents(base_dir, &path, exclusions, combined_hash, file_count)?;
+            hash_dir_contents(base_dir, &path, exclusions, ignore_patterns, combined_hash, file_count)?;
         } else {
             // Get relative path to append to the hash
             let relative_path = path.strip_prefix(base_dir)
@@ -182,12 +191,12 @@ mod tests {
         // Create file with original name
         let file1 = test_dir.join("original.txt");
         fs::write(&file1, b"same content").unwrap();
-        let hash1 = compute_segment_hash(&test_dir, &[]).unwrap();
+        let hash1 = compute_segment_hash(&test_dir, &[], None).unwrap();
         
         // Rename file (same content, different path)
         let file2 = test_dir.join("renamed.txt");
         fs::rename(&file1, &file2).unwrap();
-        let hash2 = compute_segment_hash(&test_dir, &[]).unwrap();
+        let hash2 = compute_segment_hash(&test_dir, &[], None).unwrap();
         
         // Hashes should be different (path is included)
         assert_ne!(hash1, hash2, "Hash should change when filename changes");
@@ -205,14 +214,14 @@ mod tests {
         fs::create_dir(&subdir1).unwrap();
         let file1 = subdir1.join("file.txt");
         fs::write(&file1, b"same content").unwrap();
-        let hash1 = compute_segment_hash(&test_dir, &[]).unwrap();
+        let hash1 = compute_segment_hash(&test_dir, &[], None).unwrap();
         
         // Move file to different subdirectory
         let subdir2 = test_dir.join("dir2");
         fs::create_dir(&subdir2).unwrap();
         let file2 = subdir2.join("file.txt");
         fs::rename(&file1, &file2).unwrap();
-        let hash2 = compute_segment_hash(&test_dir, &[]).unwrap();
+        let hash2 = compute_segment_hash(&test_dir, &[], None).unwrap();
         
         // Hashes should be different (path is included)
         assert_ne!(hash1, hash2, "Hash should change when file is moved");
@@ -228,11 +237,11 @@ mod tests {
         // Create file with initial content
         let file = test_dir.join("file.txt");
         fs::write(&file, b"original content").unwrap();
-        let hash1 = compute_segment_hash(&test_dir, &[]).unwrap();
+        let hash1 = compute_segment_hash(&test_dir, &[], None).unwrap();
         
         // Change file content
         fs::write(&file, b"modified content").unwrap();
-        let hash2 = compute_segment_hash(&test_dir, &[]).unwrap();
+        let hash2 = compute_segment_hash(&test_dir, &[], None).unwrap();
         
         // Hashes should be different
         assert_ne!(hash1, hash2, "Hash should change when content changes");
@@ -254,12 +263,12 @@ mod tests {
         fs::create_dir_all(file2.parent().unwrap()).unwrap();
         fs::write(&file2, b"identical content").unwrap();
         
-        let hash = compute_segment_hash(&test_dir, &[]).unwrap();
+        let hash = compute_segment_hash(&test_dir, &[], None).unwrap();
         
         // Edit both files identically
         fs::write(&file1, b"new identical content").unwrap();
         fs::write(&file2, b"new identical content").unwrap();
-        let hash_after = compute_segment_hash(&test_dir, &[]).unwrap();
+        let hash_after = compute_segment_hash(&test_dir, &[], None).unwrap();
         
         // Hashes should be different (different paths = different hashes)
         assert_ne!(hash, hash_after, "Hash should change even if identical files are edited identically");
@@ -273,11 +282,11 @@ mod tests {
         let test_dir = setup_test_dir(test_name);
         
         // Empty directory should produce a hash (of empty string)
-        let hash = compute_segment_hash(&test_dir, &[]).unwrap();
+        let hash = compute_segment_hash(&test_dir, &[], None).unwrap();
         assert!(!hash.is_empty(), "Empty segment should produce a hash");
         
         // Hash should be consistent
-        let hash2 = compute_segment_hash(&test_dir, &[]).unwrap();
+        let hash2 = compute_segment_hash(&test_dir, &[], None).unwrap();
         assert_eq!(hash, hash2, "Empty segment hash should be consistent");
         
         cleanup_test_dir(test_name);
@@ -291,7 +300,7 @@ mod tests {
         // Create files in main directory
         fs::write(test_dir.join("file1.txt"), b"content1").unwrap();
         fs::write(test_dir.join("file2.txt"), b"content2").unwrap();
-        let hash1 = compute_segment_hash(&test_dir, &[]).unwrap();
+        let hash1 = compute_segment_hash(&test_dir, &[], None).unwrap();
         
         // Create excluded subdirectory
         let excluded_dir = test_dir.join("excluded");
@@ -300,8 +309,219 @@ mod tests {
         
         // Hash should be the same (excluded files not included)
         let exclusions = vec![&excluded_dir as &PathBuf];
-        let hash2 = compute_segment_hash(&test_dir, &exclusions).unwrap();
+        let hash2 = compute_segment_hash(&test_dir, &exclusions, None).unwrap();
         assert_eq!(hash1, hash2, "Hash should be same when excluded files are added");
+        
+        cleanup_test_dir(test_name);
+    }
+
+    #[test]
+    fn test_hash_ignore_patterns_extension() {
+        let test_name = "ignore_extensions";
+        let test_dir = setup_test_dir(test_name);
+        
+        // Create files in main directory
+        fs::write(test_dir.join("file1.txt"), b"content1").unwrap();
+        fs::write(test_dir.join("file2.txt"), b"content2").unwrap();
+        let hash1 = compute_segment_hash(&test_dir, &[], None).unwrap();
+        
+        // Add .tmp files (should be ignored)
+        fs::write(test_dir.join("file3.tmp"), b"content3").unwrap();
+        fs::write(test_dir.join("file4.tmp"), b"content4").unwrap();
+        
+        // Build ignore matcher for .tmp files
+        use globset::GlobSetBuilder;
+        let mut builder = GlobSetBuilder::new();
+        builder.add(globset::Glob::new("*.tmp").unwrap());
+        let ignore_matcher = Some(builder.build().unwrap());
+        
+        // Hash should be the same (ignored files not included)
+        let hash2 = compute_segment_hash(&test_dir, &[], ignore_matcher.as_ref()).unwrap();
+        assert_eq!(hash1, hash2, "Hash should be same when ignored .tmp files are added");
+        
+        cleanup_test_dir(test_name);
+    }
+
+    #[test]
+    fn test_hash_ignore_patterns_directory() {
+        let test_name = "ignore_directory";
+        let test_dir = setup_test_dir(test_name);
+        
+        // Create files in main directory
+        fs::write(test_dir.join("file1.txt"), b"content1").unwrap();
+        fs::write(test_dir.join("file2.txt"), b"content2").unwrap();
+        let hash1 = compute_segment_hash(&test_dir, &[], None).unwrap();
+        
+        // Add node_modules directory (should be ignored)
+        let node_modules = test_dir.join("node_modules");
+        fs::create_dir(&node_modules).unwrap();
+        fs::write(node_modules.join("package.json"), b"{}").unwrap();
+        fs::write(node_modules.join("index.js"), b"console.log('test');").unwrap();
+        
+        // Build ignore matcher for node_modules
+        use globset::GlobSetBuilder;
+        let mut builder = GlobSetBuilder::new();
+        builder.add(globset::Glob::new("**/node_modules").unwrap());
+        let ignore_matcher = Some(builder.build().unwrap());
+        
+        // Hash should be the same (ignored directory not included)
+        let hash2 = compute_segment_hash(&test_dir, &[], ignore_matcher.as_ref()).unwrap();
+        assert_eq!(hash1, hash2, "Hash should be same when ignored node_modules is added");
+        
+        cleanup_test_dir(test_name);
+    }
+
+    #[test]
+    fn test_hash_ignore_patterns_hidden_file() {
+        let test_name = "ignore_hidden";
+        let test_dir = setup_test_dir(test_name);
+        
+        // Create files in main directory
+        fs::write(test_dir.join("file1.txt"), b"content1").unwrap();
+        fs::write(test_dir.join("file2.txt"), b"content2").unwrap();
+        let hash1 = compute_segment_hash(&test_dir, &[], None).unwrap();
+        
+        // Add .DS_Store file (should be ignored)
+        fs::write(test_dir.join(".DS_Store"), b"metadata").unwrap();
+        
+        // Build ignore matcher for .DS_Store
+        use globset::GlobSetBuilder;
+        let mut builder = GlobSetBuilder::new();
+        builder.add(globset::Glob::new("**/.DS_Store").unwrap());
+        let ignore_matcher = Some(builder.build().unwrap());
+        
+        // Hash should be the same (ignored file not included)
+        let hash2 = compute_segment_hash(&test_dir, &[], ignore_matcher.as_ref()).unwrap();
+        assert_eq!(hash1, hash2, "Hash should be same when ignored .DS_Store is added");
+        
+        cleanup_test_dir(test_name);
+    }
+
+    #[test]
+    fn test_hash_ignore_patterns_recursive() {
+        let test_name = "ignore_recursive";
+        let test_dir = setup_test_dir(test_name);
+        
+        // Create files in main directory
+        fs::write(test_dir.join("file1.txt"), b"content1").unwrap();
+        fs::write(test_dir.join("file2.txt"), b"content2").unwrap();
+        let hash1 = compute_segment_hash(&test_dir, &[], None).unwrap();
+        
+        // Add node_modules at different nesting levels
+        let subdir1 = test_dir.join("subdir1");
+        fs::create_dir_all(&subdir1).unwrap();
+        let node_modules1 = subdir1.join("node_modules");
+        fs::create_dir_all(&node_modules1).unwrap();
+        fs::write(node_modules1.join("package.json"), b"{}").unwrap();
+        
+        let subdir2 = test_dir.join("subdir2");
+        fs::create_dir_all(&subdir2).unwrap();
+        let deep = subdir2.join("deep");
+        fs::create_dir_all(&deep).unwrap();
+        let node_modules2 = deep.join("node_modules");
+        fs::create_dir_all(&node_modules2).unwrap();
+        fs::write(node_modules2.join("package.json"), b"{}").unwrap();
+        
+        // Build ignore matcher for recursive node_modules
+        use globset::GlobSetBuilder;
+        let mut builder = GlobSetBuilder::new();
+        builder.add(globset::Glob::new("**/node_modules").unwrap());
+        let ignore_matcher = Some(builder.build().unwrap());
+        
+        // Hash should be the same (ignored directories not included)
+        let hash2 = compute_segment_hash(&test_dir, &[], ignore_matcher.as_ref()).unwrap();
+        assert_eq!(hash1, hash2, "Hash should be same when ignored recursive node_modules are added");
+        
+        cleanup_test_dir(test_name);
+    }
+
+    #[test]
+    fn test_hash_ignore_patterns_multiple() {
+        let test_name = "ignore_multiple";
+        let test_dir = setup_test_dir(test_name);
+        
+        // Create files in main directory
+        fs::write(test_dir.join("file1.txt"), b"content1").unwrap();
+        fs::write(test_dir.join("file2.txt"), b"content2").unwrap();
+        let hash1 = compute_segment_hash(&test_dir, &[], None).unwrap();
+        
+        // Add multiple types of files that should be ignored
+        fs::write(test_dir.join("file3.tmp"), b"content3").unwrap();
+        fs::write(test_dir.join(".DS_Store"), b"metadata").unwrap();
+        let node_modules = test_dir.join("node_modules");
+        fs::create_dir(&node_modules).unwrap();
+        fs::write(node_modules.join("package.json"), b"{}").unwrap();
+        
+        // Build ignore matcher with multiple patterns
+        use globset::GlobSetBuilder;
+        let mut builder = GlobSetBuilder::new();
+        builder.add(globset::Glob::new("*.tmp").unwrap());
+        builder.add(globset::Glob::new("**/.DS_Store").unwrap());
+        builder.add(globset::Glob::new("**/node_modules").unwrap());
+        let ignore_matcher = Some(builder.build().unwrap());
+        
+        // Hash should be the same (all ignored files/dirs not included)
+        let hash2 = compute_segment_hash(&test_dir, &[], ignore_matcher.as_ref()).unwrap();
+        assert_eq!(hash1, hash2, "Hash should be same when multiple ignored patterns are added");
+        
+        cleanup_test_dir(test_name);
+    }
+
+    #[test]
+    fn test_hash_ignore_patterns_and_exclusions() {
+        let test_name = "ignore_with_exclusions";
+        let test_dir = setup_test_dir(test_name);
+        
+        // Create files in main directory
+        fs::write(test_dir.join("file1.txt"), b"content1").unwrap();
+        let hash1 = compute_segment_hash(&test_dir, &[], None).unwrap();
+        
+        // Add both excluded directory and ignored files
+        let excluded_dir = test_dir.join("excluded");
+        fs::create_dir(&excluded_dir).unwrap();
+        fs::write(excluded_dir.join("file2.txt"), b"content2").unwrap();
+        fs::write(test_dir.join("file3.tmp"), b"content3").unwrap();
+        
+        // Build ignore matcher for .tmp files
+        use globset::GlobSetBuilder;
+        let mut builder = GlobSetBuilder::new();
+        builder.add(globset::Glob::new("*.tmp").unwrap());
+        let ignore_matcher = Some(builder.build().unwrap());
+        let exclusions = vec![&excluded_dir as &PathBuf];
+        
+        // Hash should be the same (both excluded and ignored items not included)
+        let hash2 = compute_segment_hash(&test_dir, &exclusions, ignore_matcher.as_ref()).unwrap();
+        assert_eq!(hash1, hash2, "Hash should be same when both exclusions and ignore patterns are used");
+        
+        cleanup_test_dir(test_name);
+    }
+
+    #[test]
+    fn test_hash_ignore_patterns_affects_hash_when_ignored_file_changes() {
+        let test_name = "ignore_changes";
+        let test_dir = setup_test_dir(test_name);
+        
+        // Create files
+        fs::write(test_dir.join("file1.txt"), b"content1").unwrap();
+        fs::write(test_dir.join("file2.tmp"), b"content2").unwrap();
+        
+        // Build ignore matcher for .tmp files
+        use globset::GlobSetBuilder;
+        let mut builder = GlobSetBuilder::new();
+        builder.add(globset::Glob::new("*.tmp").unwrap());
+        let ignore_matcher = Some(builder.build().unwrap());
+        
+        let hash1 = compute_segment_hash(&test_dir, &[], ignore_matcher.as_ref()).unwrap();
+        
+        // Change ignored file (should not affect hash)
+        fs::write(test_dir.join("file2.tmp"), b"different content").unwrap();
+        let hash2 = compute_segment_hash(&test_dir, &[], ignore_matcher.as_ref()).unwrap();
+        assert_eq!(hash1, hash2, "Hash should not change when ignored file changes");
+        
+        // Change non-ignored file (should affect hash)
+        fs::write(test_dir.join("file1.txt"), b"different content").unwrap();
+        let hash3 = compute_segment_hash(&test_dir, &[], ignore_matcher.as_ref()).unwrap();
+        assert_ne!(hash1, hash3, "Hash should change when non-ignored file changes");
         
         cleanup_test_dir(test_name);
     }
@@ -319,8 +539,8 @@ mod tests {
         fs::write(subdir.join("file3.txt"), b"content3").unwrap();
         
         // Hash should be consistent across multiple calls
-        let hash1 = compute_segment_hash(&test_dir, &[]).unwrap();
-        let hash2 = compute_segment_hash(&test_dir, &[]).unwrap();
+        let hash1 = compute_segment_hash(&test_dir, &[], None).unwrap();
+        let hash2 = compute_segment_hash(&test_dir, &[], None).unwrap();
         assert_eq!(hash1, hash2, "Hash should be consistent for same directory");
         
         cleanup_test_dir(test_name);

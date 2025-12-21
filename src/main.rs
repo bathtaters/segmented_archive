@@ -11,7 +11,7 @@ use std::env;
 use log::{info, error, LevelFilter};
 use crate::logger::{init_logger, set_log_path};
 use crate::hasher::{compute_segment_hash, read_hash_file, write_hash_file};
-use crate::helpers::{create_archive};
+use crate::helpers::{create_archive, build_ignore_matcher};
 
 // --- Structs ---
 
@@ -28,6 +28,7 @@ struct Config {
     compression_level: Option<u32>,
     max_size_bytes: Option<usize>,
     segments: HashMap<String, PathBuf>,
+    ignore: Option<Vec<String>>,
 }
 
 // --- Main Logic ---
@@ -54,6 +55,7 @@ fn main() -> Result<()> {
         compression_level,
         max_size_bytes,
         segments,
+        ignore,
     } = toml::from_str(&config_str).context("Failed to parse config TOML")?;
 
     if let Some(log_file) = log_file {
@@ -77,6 +79,14 @@ fn main() -> Result<()> {
 
     let all_paths: HashSet<&PathBuf> = segments.values().collect();
 
+    // Build ignore pattern matcher if patterns are provided
+    let ignore_matcher = if let Some(ignore_patterns) = &ignore {
+        build_ignore_matcher(ignore_patterns)
+            .context("Failed to build ignore pattern matcher")?
+    } else {
+        None
+    };
+
     // Load existing hash file
     let mut segment_hashes = if let Some(hash_file) = &hash_file {
         read_hash_file(hash_file).context("Failed to read hash file")?
@@ -96,7 +106,7 @@ fn main() -> Result<()> {
         let exclusions = get_exclusions(&all_paths, path);
 
         // Compute and store segment hash
-        match compute_segment_hash(path, &exclusions) {
+        match compute_segment_hash(path, &exclusions, ignore_matcher.as_ref()) {
             Ok(hash) => {
                 if segment_hashes.get(name) == Some(&hash) {
                     info!("Segment '{}' has not changed, skipping", name);
@@ -120,6 +130,7 @@ fn main() -> Result<()> {
             &archive_path,
             &root_path,
             &exclusions,
+            ignore_matcher.as_ref(),
             compression_level,
             max_size_bytes,
             post_script.to_owned(),

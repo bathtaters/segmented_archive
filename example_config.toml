@@ -6,6 +6,13 @@ log_file = "/tmp/segmented_archive/segmented_archive_%D.log"
 compression_level = 6 # Tar/GZip compression level: 0 (No compression) - 9 (Most compression)
 max_size_bytes = 2147483648 # Split files at this many bytes (2GB)
 
+ignore = [
+    "/home/user/Documents/",
+    ".DS_Store",
+    "*.tmp",
+    "**/node_modules",
+]
+
 [segments]
 documents = "/home/user/Documents"
 nested_docs = "/home/user/Documents/SubFolder" # This should be excluded from Documents archive
