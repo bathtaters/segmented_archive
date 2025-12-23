@@ -64,3 +64,37 @@ There are some additional advanced options that can be set at the top of the [re
 - **`EXT`**: Extension of the backup files.
 - **`PATH_FILE`**: Path file used to place extracted files
 - **`REMOVE_TAR_FILES`**: Whether to remove tar files after extraction
+
+## Cross-Compiling
+
+To compile for a NAS requires cross compilation. Here is how I do it on Mac OS for an Intel Synology. _(Steps 1-3 only need to be performed once per system.)_
+
+1. _(If not already)_ Install cross-compilation toolchain for GNU Linux (This cask also contains other versions).
+
+```bash
+brew install SergioBenitez/osxct/x86_64-unknown-linux-gnu
+```
+
+2. _(If not already)_ Create/add to the cargo `config.toml` file.
+   This will configure the new tool to be used when linking to the denoted target.
+
+```toml
+# Set for current project: `$project_root/.cargo/config.toml`
+# Set globally: `$HOME/.cargo/config.toml`
+[target.x86_64-unknown-linux-gnu]
+linker = "x86_64-unknown-linux-gnu-gcc"
+```
+
+3. _(If not already)_ Add the target version's toolchain to rustup.
+
+```bash
+rustup target add x86_64-unknown-linux-gnu
+```
+
+4. Build for the target platform.
+
+```bash
+cargo build --target x86_64-unknown-linux-gnu --release
+```
+
+5. Copy the binary to the remote server from: `$project_root/target/x86_64-unknown-linux-gnu/release/segmented_archive`
