@@ -12,6 +12,31 @@ TEST_CFG="$TEST_DIR/test.toml"
 SCRIPT_PATH="${BASH_SOURCE[0]}"
 SCRIPT_DIR="$(dirname "$(readlink -f "$SCRIPT_PATH")")"
 
+
+# Handle script exit
+on_exit() {
+    STATUS=$?
+
+    # On failure, print log file
+    echo
+    if [ $STATUS -ne 0 ]; then
+        echo " --- TEST LOG  --- "
+        cat "$TEST_DIR/logs/test_log_"*
+        echo
+        echo " --- TEST FAILED ($STATUS) --- "
+    else
+        echo " --- TEST PASSED --- "
+    fi
+
+    echo
+    echo " --- CLEANING UP TEST FILES --- "
+    rm -Rf "$TEST_DIR"
+
+    exit $STATUS
+}
+trap on_exit EXIT
+
+
 echo " --- RUNNING UNIT TESTS --- "
 cargo test
 
@@ -130,10 +155,3 @@ echo
 echo " --- MANUALLY INSPECT FILES --- "
 open "$TEST_DIR"
 read -p "Press Enter to continue"
-
-echo
-echo " --- CLEANING UP TEST FILES --- "
-rm -Rf "$TEST_DIR"
-
-echo
-echo " --- TEST COMPLETED --- "
