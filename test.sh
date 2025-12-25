@@ -147,7 +147,7 @@ cargo run "$TEST_CFG"
 echo
 echo " --- DIFF BETWEEN ORIGINAL AND RESTORED FILES --- "
 diff -r "$TEST_DIR/files" "$TEST_DIR/restored" || true
-echo "(You should see: 'test_dir_4' and 'test_file.ignore' from dirs 5 & 7)"
+echo "(You should see: 'No such file or directory' error for broken_symlink.txt, 'test_dir_4,' and 'test_file.ignore' from dirs 5 & 7)"
 
 echo
 echo " --- SKIPS UNCHANGED SEGMENTS --- "
