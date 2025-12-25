@@ -11,6 +11,14 @@ use crate::rolling_writer::RollingWriter;
 
 const PATH_FILE: &str = ".seg_arc.path";
 
+// File permission constants
+const FILE_MODE_READ: u32 = 0o644;  // Read-only file permissions (rw-r--r--)
+const FILE_MODE_EXEC: u32 = 0o755; // Executable file permissions (rwxr-xr-x)
+
+// Exit code threshold for detecting process panics/abnormal termination
+// Exit codes >= 128 typically indicate the process was killed by a signal
+const PROCESS_EXIT_CODE_THRESHOLD: i32 = 128;
+
 /// Builds a GlobSet from ignore patterns for efficient pattern matching
 pub fn build_ignore_matcher(patterns: &[String]) -> Result<Option<GlobSet>> {
     if patterns.is_empty() {
@@ -61,7 +69,7 @@ pub fn create_archive(
     let mut header = tar::Header::new_gnu();
     header.set_path(PATH_FILE)?;
     header.set_size(path_str.len() as u64);
-    header.set_mode(0o644);
+    header.set_mode(FILE_MODE_READ);
     header.set_cksum(); // Removing this line will cause the archive to be corrupted
     tar.append(&header, path_str.as_bytes())?;
 
@@ -120,7 +128,7 @@ fn append_dir_contents(
             let mut header = tar::Header::new_gnu();
             header.set_path(relative_path)?;
             header.set_entry_type(tar::EntryType::Directory);
-            header.set_mode(0o755);
+            header.set_mode(FILE_MODE_EXEC);
             header.set_cksum(); // Removing this line will cause the archive to be corrupted
             tar.append(&header, &[] as &[u8])?;
         }
@@ -149,11 +157,11 @@ pub(crate) fn execute_post_script(script_path: PathBuf, arg: &str) -> io::Result
             if exit_code == 0 {
                 info!("Post-script finished successfully.");
                 Ok(0)
-            } else if exit_code < 128 {
+            } else if exit_code < PROCESS_EXIT_CODE_THRESHOLD && exit_code > 0 {
                 warn!("Post-script finished with error: {}", status);
                 Ok(exit_code)
             } else {
-                Err(io::Error::new(io::ErrorKind::Other, format!("Post-script panicked: {}", status)))
+                Err(io::Error::new(io::ErrorKind::Other, format!("Post-script panicked: {:?}", status)))
             }
         }
 

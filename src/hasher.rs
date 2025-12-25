@@ -8,6 +8,8 @@ use log::{warn};
 use globset::GlobSet;
 use crate::helpers::is_excluded;
 
+// Buffer size for reading files during hashing (8KB)
+const HASHER_BUFFER_SIZE: usize = 8192;
 
 /// Computes a hash for a segment by hashing all files (excluding folders and exclusions)
 /// Uses xxHash (xxh3) for individual files, then XORs all hashes together
@@ -96,7 +98,7 @@ fn hash_file(file_path: &Path, relative_path: &Path) -> Result<u64> {
             .context(format!("Failed to open file for hashing: {:?}", file_path))?;
         let mut reader = BufReader::new(file);
         
-        let mut buffer = vec![0u8; 8192]; // 8KB buffer
+        let mut buffer = vec![0u8; HASHER_BUFFER_SIZE];
         loop {
             let bytes_read = reader.read(&mut buffer)?;
             if bytes_read == 0 {
