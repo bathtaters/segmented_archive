@@ -29,6 +29,12 @@ on_exit() {
     fi
 
     echo
+    echo " --- MANUALLY INSPECT FILES --- "
+    open "$TEST_DIR"
+    read -p "Press Enter to continue"
+
+
+    echo
     echo " --- CLEANING UP TEST FILES --- "
     rm -Rf "$TEST_DIR"
 
@@ -150,8 +156,3 @@ rm -Rf "$TEST_DIR/archives"
 cargo run "$TEST_CFG"
 ls -l "$TEST_DIR/archives"
 echo "(You should only see test_base.tar.gz above)"
-
-echo
-echo " --- MANUALLY INSPECT FILES --- "
-open "$TEST_DIR"
-read -p "Press Enter to continue"
