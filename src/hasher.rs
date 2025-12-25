@@ -6,6 +6,7 @@ use std::io::{BufReader, BufRead, Write, Read};
 use std::fs;
 use log::{warn};
 use globset::GlobSet;
+use crate::helpers::is_excluded;
 
 
 /// Computes a hash for a segment by hashing all files (excluding folders and exclusions)
@@ -42,7 +43,7 @@ fn hash_dir_contents(
         let path = entry.path();
 
         // Skip excluded paths (same logic as append_dir_contents)
-        if exclusions.iter().any(|&exclude_path| { path.starts_with(exclude_path) }) {
+        if is_excluded(&path, exclusions) {
             continue;
         }
 
@@ -70,7 +71,7 @@ fn hash_dir_contents(
     Ok(())
 }
 
-/// Hash a single file + its pathusing xxHash (xxh3)
+/// Hash a single file + its path using xxHash
 fn hash_file(file_path: &Path, relative_path: &Path) -> Result<u64> {
     let mut hasher = Xxh3::new();
     

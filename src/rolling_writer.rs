@@ -122,7 +122,7 @@ impl Write for RollingWriter {
             bytes_written += written;
             bytes_remaining -= written;
 
-            // Open a new file if 
+            // Open a new file if there is still data to write
             if bytes_remaining > 0 {
                 self.open_new_part()?;
             }

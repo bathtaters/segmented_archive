@@ -85,7 +85,7 @@ fn append_dir_contents(
         let path = entry.path();
 
         // Skip already archived paths
-        if exclusions.iter().any(|&exclude_path| { path.starts_with(exclude_path) }) {
+        if is_excluded(&path, exclusions) {
             info!("Skipping excluded path recursively: {:?}", path);
             continue;
         }
@@ -185,6 +185,11 @@ fn strip_root(path: &Path, root_path: &Option<PathBuf>) -> Result<String> {
     })
 }
 
+/// Check if a path should be excluded based on the exclusion list
+pub fn is_excluded(path: &Path, exclusions: &[&PathBuf]) -> bool {
+    exclusions.iter().any(|&exclude_path| path.starts_with(exclude_path))
+}
+
 /// --- Tests --- ///
 
 #[cfg(test)]
@@ -194,6 +199,33 @@ mod tests {
     use std::fs;
     use flate2::read::GzDecoder;
     use tar::Archive;
+
+    #[test]
+    fn test_is_excluded() {
+        let path1 = PathBuf::from("/tmp/test1");
+        let path2 = PathBuf::from("/tmp/test1/nested");
+        let path3 = PathBuf::from("/tmp/test2");
+        let path4 = PathBuf::from("/tmp/test1/nested/file.txt");
+        
+        let exclusions = vec![&path2 as &PathBuf];
+        
+        // path2 should be excluded (it's in the exclusion list, starts_with returns true for equal paths)
+        assert!(is_excluded(&path2, &exclusions));
+        
+        // path4 should be excluded (it's under path2)
+        assert!(is_excluded(&path4, &exclusions));
+        
+        // path3 should not be excluded (not in list and not under any exclusion)
+        assert!(!is_excluded(&path3, &exclusions));
+        
+        // path1 should not be excluded (it's a parent of an exclusion, not a child)
+        assert!(!is_excluded(&path1, &exclusions));
+        
+        // Test with nested exclusions
+        let exclusions2 = vec![&path1 as &PathBuf];
+        assert!(is_excluded(&path2, &exclusions2)); // path2 is under path1
+        assert!(is_excluded(&path1, &exclusions2)); // path1 starts with itself (equal paths)
+    }
 
     #[test]
     fn test_build_ignore_matcher_empty() {
