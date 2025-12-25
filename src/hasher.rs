@@ -72,9 +72,6 @@ fn hash_dir_contents(
 
 /// Hash a single file + its pathusing xxHash (xxh3)
 fn hash_file(file_path: &Path, relative_path: &Path) -> Result<u64> {
-    let file = fs::File::open(file_path)
-        .context(format!("Failed to open file for hashing: {:?}", file_path))?;
-    let mut reader = BufReader::new(file);
     let mut hasher = Xxh3::new();
     
     // Include the relative path in the hash (detects renames and moves)
@@ -82,14 +79,30 @@ fn hash_file(file_path: &Path, relative_path: &Path) -> Result<u64> {
     let path_str = relative_path.to_string_lossy();
     hasher.update(path_str.as_bytes());
     
-    // Hash the file content
-    let mut buffer = vec![0u8; 8192]; // 8KB buffer
-    loop {
-        let bytes_read = reader.read(&mut buffer)?;
-        if bytes_read == 0 {
-            break;
+    // Check if this is a symlink
+    let metadata = fs::symlink_metadata(file_path)
+        .context(format!("Failed to read metadata for: {:?}", file_path))?;
+    
+    if metadata.file_type().is_symlink() {
+        // For symlinks, hash the target path string (not the target file)
+        let target = fs::read_link(file_path)
+            .context(format!("Failed to read symlink target: {:?}", file_path))?;
+        let target_str = target.to_string_lossy();
+        hasher.update(target_str.as_bytes());
+    } else {
+        // For regular files, hash the file content
+        let file = fs::File::open(file_path)
+            .context(format!("Failed to open file for hashing: {:?}", file_path))?;
+        let mut reader = BufReader::new(file);
+        
+        let mut buffer = vec![0u8; 8192]; // 8KB buffer
+        loop {
+            let bytes_read = reader.read(&mut buffer)?;
+            if bytes_read == 0 {
+                break;
+            }
+            hasher.update(&buffer[..bytes_read]);
         }
-        hasher.update(&buffer[..bytes_read]);
     }
     
     Ok(hasher.digest())
@@ -622,6 +635,75 @@ mod tests {
         assert_eq!(lines[0], "apple=hash2");
         assert_eq!(lines[1], "banana=hash3");
         assert_eq!(lines[2], "zebra=hash1");
+        
+        cleanup_test_dir(test_name);
+    }
+
+    #[test]
+    fn test_hash_symlink_target() {
+        let test_name = "symlink_target";
+        let test_dir = setup_test_dir(test_name);
+        
+        // Create target files
+        let target1 = test_dir.join("target1.txt");
+        let target2 = test_dir.join("target2.txt");
+        fs::write(&target1, b"content1").unwrap();
+        fs::write(&target2, b"content2").unwrap();
+        
+        // Create symlink pointing to target1
+        let symlink_path = test_dir.join("link.txt");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&target1, &symlink_path).unwrap();
+        #[cfg(windows)]
+        std::os::windows::fs::symlink_file(&target1, &symlink_path).unwrap();
+        
+        let hash1 = compute_segment_hash(&test_dir, &[], None).unwrap();
+        
+        // Remove old symlink and create new one pointing to target2
+        fs::remove_file(&symlink_path).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&target2, &symlink_path).unwrap();
+        #[cfg(windows)]
+        std::os::windows::fs::symlink_file(&target2, &symlink_path).unwrap();
+        
+        let hash2 = compute_segment_hash(&test_dir, &[], None).unwrap();
+        
+        // Hash should change when symlink target changes
+        assert_ne!(hash1, hash2, "Hash should change when symlink target changes");
+        
+        cleanup_test_dir(test_name);
+    }
+
+    #[test]
+    fn test_hash_symlink_path() {
+        let test_name = "symlink_path";
+        let test_dir = setup_test_dir(test_name);
+        
+        // Create target file
+        let target = test_dir.join("target.txt");
+        fs::write(&target, b"content").unwrap();
+        
+        // Create symlink with one name
+        let symlink1 = test_dir.join("link1.txt");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&target, &symlink1).unwrap();
+        #[cfg(windows)]
+        std::os::windows::fs::symlink_file(&target, &symlink1).unwrap();
+        
+        let hash1 = compute_segment_hash(&test_dir, &[], None).unwrap();
+        
+        // Remove old symlink and create new one with different name (same target)
+        fs::remove_file(&symlink1).unwrap();
+        let symlink2 = test_dir.join("link2.txt");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&target, &symlink2).unwrap();
+        #[cfg(windows)]
+        std::os::windows::fs::symlink_file(&target, &symlink2).unwrap();
+        
+        let hash2 = compute_segment_hash(&test_dir, &[], None).unwrap();
+        
+        // Hash should change when symlink path changes (even if target is same)
+        assert_ne!(hash1, hash2, "Hash should change when symlink path changes");
         
         cleanup_test_dir(test_name);
     }
