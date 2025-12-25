@@ -13,7 +13,6 @@ const PATH_FILE: &str = ".seg_arc.path";
 
 // File permission constants
 const FILE_MODE_READ: u32 = 0o644;  // Read-only file permissions (rw-r--r--)
-const FILE_MODE_EXEC: u32 = 0o755; // Executable file permissions (rwxr-xr-x)
 
 // Exit code threshold for detecting process panics/abnormal termination
 // Exit codes >= 128 typically indicate the process was killed by a signal
@@ -122,12 +121,7 @@ fn append_dir_contents(
     // Add empty directory to the archive (Except the root, which is added by default)
     if is_empty && current_dir != base_dir {
         if let Ok(relative_path) = current_dir.strip_prefix(base_dir) {
-            let mut header = tar::Header::new_gnu();
-            header.set_path(relative_path)?;
-            header.set_entry_type(tar::EntryType::Directory);
-            header.set_mode(FILE_MODE_EXEC);
-            header.set_cksum(); // Removing this line will cause the archive to be corrupted
-            tar.append(&header, &[] as &[u8])?;
+            tar.append_dir(relative_path, current_dir)?;
         }
     }
     Ok(())
@@ -902,6 +896,133 @@ mod tests {
             None,
         );
         assert!(result.is_err(), "Compression level 100 should be invalid");
+        
+        cleanup_test_dir(test_name);
+    }
+
+    #[test]
+    fn test_create_archive_with_long_path_names() {
+        let test_name = "long_paths";
+        let test_dir = setup_test_dir(test_name);
+        
+        // Create a directory structure with a very long path
+        let long_path = test_dir.join("TestLongFilePath/TestLongFilePath/TestLongFilePath/TestLongFilePath/TestLongFilePath/TestLongFilePath/LastFolder.Component");
+        fs::create_dir_all(&long_path).unwrap();
+        
+        // Create an empty subdirectory
+        let empty_subdir = long_path.join("Contents");
+        fs::create_dir(&empty_subdir).unwrap();
+        
+        // Create a file in the long path
+        fs::write(long_path.join("file.txt"), b"test content").unwrap();
+        
+        // Create another very long path (over 100 characters to test GNU long link support)
+        let very_long_path = test_dir.join("A".repeat(50).as_str())
+            .join("B".repeat(50).as_str())
+            .join("C".repeat(50).as_str());
+        fs::create_dir_all(&very_long_path).unwrap();
+        fs::write(very_long_path.join("deep_file.txt"), b"deep content").unwrap();
+        
+        // Create an empty directory in the very long path
+        let empty_deep_dir = very_long_path.join("EmptySubdir");
+        fs::create_dir(&empty_deep_dir).unwrap();
+        
+        let archive_path = test_dir.join("test.tar.gz");
+        
+        // Create archive - this should succeed with long paths
+        let result = create_archive(
+            &test_dir,
+            &archive_path,
+            &None,
+            &[],
+            None,
+            Some(6),
+            None,
+            None,
+        );
+        
+        assert!(result.is_ok(), "Archive creation should succeed with long paths: {:?}", 
+            result.err());
+        
+        // Extract and verify contents
+        let entries = extract_archive_contents(&archive_path);
+        
+        // Verify the long path structure is preserved
+        assert!(entries.iter().any(|e| e.contains("LastFolder.Component")), 
+            "Archive should contain the long path directory");
+        assert!(entries.iter().any(|e| e.contains("LastFolder.Component/Contents")), 
+            "Archive should contain the empty subdirectory in long path");
+        assert!(entries.iter().any(|e| e.contains("LastFolder.Component/file.txt")), 
+            "Archive should contain the file in long path");
+        
+        // Verify the very long path is preserved
+        let has_very_long_path = entries.iter().any(|e| {
+            e.contains("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA") ||
+            e.contains("deep_file.txt")
+        });
+        assert!(has_very_long_path, "Archive should contain the very long path");
+        
+        // Verify empty directories are included
+        let has_empty_dir = entries.iter().any(|e| {
+            e.contains("EmptySubdir") && !e.contains(".")
+        });
+        assert!(has_empty_dir, "Archive should contain empty directories in long paths");
+        
+        cleanup_test_dir(test_name);
+    }
+
+    #[test]
+    fn test_create_archive_with_long_path_names_and_root_path() {
+        let test_name = "long_paths_with_root";
+        let test_dir = setup_test_dir(test_name);
+        
+        // Create a base directory structure
+        let base_dir = test_dir.join("base");
+        fs::create_dir_all(&base_dir).unwrap();
+        
+        // Create a long path structure
+        let long_path = base_dir.join("TestLongFilePath/TestLongFilePath/TestLongFilePath/TestLongFilePath/TestLongFilePath/TestLongFilePath/LastFolder.Component");
+        fs::create_dir_all(&long_path).unwrap();
+        
+        // Create an empty subdirectory
+        let empty_subdir = long_path.join("Contents");
+        fs::create_dir(&empty_subdir).unwrap();
+        
+        // Create a file
+        fs::write(long_path.join("file.txt"), b"test content").unwrap();
+        
+        let archive_path = test_dir.join("test.tar.gz");
+        
+        // Create archive with root_path set (this tests path stripping with long paths)
+        let root_path = Some(base_dir.clone());
+        let result = create_archive(
+            &base_dir,
+            &archive_path,
+            &root_path,
+            &[],
+            None,
+            Some(6),
+            None,
+            None,
+        );
+        
+        assert!(result.is_ok(), "Archive creation should succeed with long paths and root_path: {:?}", 
+            result.err());
+        
+        // Extract and verify contents
+        let entries = extract_archive_contents(&archive_path);
+        
+        // With root_path set, the paths should be relative to base_dir
+        assert!(entries.iter().any(|e| e.contains("LastFolder.Component")), 
+            "Archive should contain the long path directory (relative to root)");
+        assert!(entries.iter().any(|e| e.contains("LastFolder.Component/Contents")), 
+            "Archive should contain the empty subdirectory");
+        assert!(entries.iter().any(|e| e.contains("LastFolder.Component/file.txt")), 
+            "Archive should contain the file");
+        
+        // Verify the path file exists (the exact content depends on root_path logic)
+        assert!(entries.iter().any(|e| e.contains(".seg_arc.path")), 
+            "Archive should contain path file");
         
         cleanup_test_dir(test_name);
     }
