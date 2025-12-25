@@ -10,6 +10,7 @@ pub struct RollingWriter {
     current_file: Option<File>,
     current_path: Option<String>,
     current_size: usize,
+    /// If None, all data is written to a single file without part numbering.
     max_size: Option<usize>,
     base_path: PathBuf,
     part_counter: u32,
@@ -50,16 +51,23 @@ impl RollingWriter {
         self.finalize_current(false)?;
         
         // Increment part number if max_size is set
-        let filename = if self.max_size.is_some() {
-            self.part_counter += 1;
-            format!("{}.part{:03}", self.base_path.display(), self.part_counter)
-        } else if self.current_file.is_none() {
-            self.base_path.display().to_string()
-        } else {
-            return Err(io::Error::new(
-                ErrorKind::Other,
-                "RollingWriter in an invalid state: 'max_size' is not set and 'current_file' is. This can happen if 'max_size' is not modified after the RollingWriter has started writing."
-            ))
+        let filename = match self.max_size {
+            Some(_) => {
+                // Multi-part mode: increment counter and use part number
+                self.part_counter += 1;
+                format!("{}.part{:03}", self.base_path.display(), self.part_counter)
+            }
+            None => {
+                // Single-file mode: use base path directly
+                if self.current_file.is_some() {
+                    // This is impossible to reach as long as max_size is immutable
+                    return Err(io::Error::new(
+                        ErrorKind::Other,
+                        "RollingWriter internal error: attempted to open new part in single-file mode with existing file"
+                    ));
+                }
+                self.base_path.display().to_string()
+            }
         };
         self.current_path = Some(filename.to_owned());
         
