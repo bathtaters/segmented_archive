@@ -17,6 +17,7 @@ use crate::helpers::{create_archive, build_ignore_matcher};
 
 const CONFIG_PATH: &str = "config.toml"; // Default
 const LOG_LEVEL: LevelFilter = LevelFilter::Info;
+const CRASH_ON_HASH_FAILURE: bool = false;
 
 #[derive(Debug, serde::Deserialize)]
 struct Config {
@@ -117,8 +118,14 @@ fn main() -> Result<()> {
                 segment_hashes.insert(name.clone(), hash.clone());
             }
             Err(e) => {
+                
                 error!("Failed to compute hash for segment '{}': {}", name, e);
-                return Err(anyhow!("Failed to compute hash for segment '{}'", name))
+                if CRASH_ON_HASH_FAILURE {
+                    return Err(anyhow!("Failed to compute hash for segment '{}'", name))
+                } else {
+                    info!("Forcing backup of segment '{}' due to hash failure.", name);
+                    segment_hashes.remove(name); // Remove failed segment from hash file
+                }
             }
         }
 
