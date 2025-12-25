@@ -155,8 +155,9 @@ fn main() -> Result<()> {
     // Write updated hash file
     if let Some(hash_file) = hash_file {
         if let Err(e) = write_hash_file(&hash_file, &segment_hashes) {
-            error!("Failed to write hash file: {}", e);
-            return Err(anyhow!("Failed to write hash file"));
+            info!("New hashes (You can manually update the hash file if you need to): {:?}", segment_hashes);
+            error!("Failed to write new hashes to '{}': {}", hash_file.display(), e);
+            return Err(anyhow!("Failed to update hash file"));
         }
         info!("Updated hash file: {:?}", hash_file);
     }
