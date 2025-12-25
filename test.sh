@@ -42,6 +42,21 @@ mkdir -p "$TEST_DIR/files/test_dir_2/nest_a/nest_b/nest_c"
 echo "This is a test file in a nested directory" > "$TEST_DIR/files/test_dir_2/nest_a/nest_b/test_file_nested.txt"
 echo "This is a hidden file" > "$TEST_DIR/files/test_dir_2/.hidden_file.txt"
 
+# Create symlink test files
+echo "This is a target file for symlinks" > "$TEST_DIR/files/test_dir_3/symlink_target.txt"
+mkdir -p "$TEST_DIR/files/test_dir_3/symlink_dir_target"
+echo "File inside symlink target directory" > "$TEST_DIR/files/test_dir_3/symlink_dir_target/file.txt"
+
+# Create symlinks
+ln -s "symlink_target.txt" "$TEST_DIR/files/test_dir_3/symlink_to_file.txt"
+ln -s "symlink_dir_target" "$TEST_DIR/files/test_dir_3/symlink_to_dir"
+ln -s "non_existent_file.txt" "$TEST_DIR/files/test_dir_3/broken_symlink.txt"
+ln -s "../test_dir_1/test_file_1.txt" "$TEST_DIR/files/test_dir_3/symlink_to_parent.txt"
+
+echo
+echo " --- CREATED SYMLINKS (for reference) --- "
+ls -la "$TEST_DIR/files/test_dir_3/" | grep -E "^l|total"
+
 # Create test config
 echo "output_path = \"$TEST_DIR/archives\"" > "$TEST_CFG"
 echo "root_path = \"$TEST_DIR/files\"" >> "$TEST_CFG"
@@ -56,6 +71,7 @@ echo "[segments]" >> "$TEST_CFG"
 echo "test_base = \"$TEST_DIR/files\"" >> "$TEST_CFG"
 echo "large_file = \"$TEST_DIR/files/test_dir_1/\"" >> "$TEST_CFG"
 echo "nested_dir = \"$TEST_DIR/files/test_dir_2/nest_a/nest_b/\"" >> "$TEST_CFG"
+echo "symlinks = \"$TEST_DIR/files/test_dir_3/\"" >> "$TEST_CFG"
 
 echo
 echo " --- TEST CONFIG: $TEST_CFG --- "
