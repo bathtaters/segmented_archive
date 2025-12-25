@@ -77,7 +77,7 @@ fn append_dir_contents(
     exclusions: &[&PathBuf],
     ignore_patterns: Option<&GlobSet>,
 ) -> Result<()> {
-    let mut is_empty = current_dir != base_dir;
+    let mut is_empty = true;
 
     for entry in fs::read_dir(current_dir)? {
         is_empty = false;
@@ -109,8 +109,8 @@ fn append_dir_contents(
         }
     }
 
-    // Add empty directory to the archive
-    if is_empty {
+    // Add empty directory to the archive (Except the root, which is added by default)
+    if is_empty && current_dir != base_dir {
         if let Ok(relative_path) = current_dir.strip_prefix(base_dir) {
             let mut header = tar::Header::new_gnu();
             header.set_path(relative_path)?;
