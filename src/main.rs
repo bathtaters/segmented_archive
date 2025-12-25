@@ -84,12 +84,9 @@ fn main() -> Result<()> {
     let all_paths: HashSet<&PathBuf> = segments.values().collect();
 
     // Build ignore pattern matcher if patterns are provided
-    let ignore_matcher = if let Some(ignore_patterns) = &ignore {
-        build_ignore_matcher(ignore_patterns)
-            .context("Failed to build ignore pattern matcher")?
-    } else {
-        None
-    };
+    let ignore_matcher = ignore.as_ref()
+        .map_or_else(|| Ok(None), |patterns| build_ignore_matcher(patterns))
+        .context("Failed to build ignore pattern matcher")?;
 
     // Load existing hash file
     let mut segment_hashes = if let Some(hash_file) = &hash_file {
