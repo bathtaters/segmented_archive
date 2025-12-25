@@ -40,7 +40,12 @@ pub fn create_archive(
 ) -> Result<()> {
     // Configure tar compression
     let comp = match compression_level {
-        Some(level) => Compression::new(level),
+        Some(level) => {
+            if level > 9 {
+                return Err(anyhow!("Compression level must be between 0 and 9: {}", level));
+            }
+            Compression::new(level)
+        },
         None => Compression::default()
     };
     let mut file = RollingWriter::new(output_path.to_path_buf(), max_size_bytes)?;
@@ -125,7 +130,7 @@ fn append_dir_contents(
 
 
 /// Executes an external script, returning exit code.
-fn execute_post_script(script_path: PathBuf, arg: &str) -> io::Result<i32> {
+pub(crate) fn execute_post_script(script_path: PathBuf, arg: &str) -> io::Result<i32> {
     info!("Executing post-script: {:?}", script_path);
 
     match Command::new(&script_path).arg(arg).status() {
@@ -610,6 +615,262 @@ mod tests {
         assert!(entries.iter().any(|e| e.contains("file1.txt")));
         assert!(!entries.iter().any(|e| e.contains("excluded")));
         assert!(!entries.iter().any(|e| e.contains("file3.tmp")));
+        
+        cleanup_test_dir(test_name);
+    }
+
+    #[test]
+    fn test_execute_post_script_success() {
+        let test_name = "post_script_success";
+        let test_dir = setup_test_dir(test_name);
+        
+        // Create a simple script that exits with 0
+        let script_path = test_dir.join("test_script.sh");
+        #[cfg(unix)]
+        {
+            fs::write(&script_path, "#!/bin/bash\nexit 0\n").unwrap();
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&script_path, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        #[cfg(windows)]
+        {
+            // On Windows, create a batch file
+            fs::write(&script_path, "@echo off\nexit /b 0\n").unwrap();
+        }
+        
+        let result = execute_post_script(script_path, "test_arg");
+        assert!(result.is_ok(), "Script should execute successfully");
+        assert_eq!(result.unwrap(), 0, "Script should return exit code 0");
+        
+        cleanup_test_dir(test_name);
+    }
+
+    #[test]
+    fn test_execute_post_script_non_zero_exit() {
+        let test_name = "post_script_non_zero";
+        let test_dir = setup_test_dir(test_name);
+        
+        // Create a script that exits with non-zero code
+        let script_path = test_dir.join("test_script.sh");
+        #[cfg(unix)]
+        {
+            fs::write(&script_path, "#!/bin/bash\nexit 42\n").unwrap();
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&script_path, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        #[cfg(windows)]
+        {
+            fs::write(&script_path, "@echo off\nexit /b 42\n").unwrap();
+        }
+        
+        let result = execute_post_script(script_path, "test_arg");
+        assert!(result.is_ok(), "Script execution should not panic");
+        assert_eq!(result.unwrap(), 42, "Script should return exit code 42");
+        
+        cleanup_test_dir(test_name);
+    }
+
+    #[test]
+    fn test_execute_post_script_script_not_found() {
+        let test_name = "post_script_not_found";
+        let test_dir = setup_test_dir(test_name);
+        
+        // Try to execute a non-existent script
+        let script_path = test_dir.join("nonexistent_script.sh");
+        
+        let result = execute_post_script(script_path, "test_arg");
+        assert!(result.is_err(), "Should return error for non-existent script");
+        
+        cleanup_test_dir(test_name);
+    }
+
+    #[test]
+    fn test_execute_post_script_no_execute_permission() {
+        let test_name = "post_script_no_exec";
+        let test_dir = setup_test_dir(test_name);
+        
+        // Create a script without execute permission
+        let script_path = test_dir.join("test_script.sh");
+        fs::write(&script_path, "#!/bin/bash\necho test\n").unwrap();
+        
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            // Remove execute permission
+            fs::set_permissions(&script_path, fs::Permissions::from_mode(0o644)).unwrap();
+            
+            let result = execute_post_script(script_path.clone(), "test_arg");
+            assert!(result.is_err(), "Should return error for script without execute permission");
+            
+            // Verify the error message mentions permission
+            let error_msg = result.unwrap_err().to_string();
+            assert!(error_msg.contains("execute permission") || error_msg.contains("permission"), 
+                "Error should mention permission issue");
+        }
+        #[cfg(windows)]
+        {
+            // On Windows, permissions work differently, so this test may not apply
+            // Just verify the script can be read
+            assert!(fs::metadata(&script_path).is_ok());
+        }
+        
+        cleanup_test_dir(test_name);
+    }
+
+    #[test]
+    fn test_execute_post_script_exit_code_above_128() {
+        let test_name = "post_script_panic";
+        let test_dir = setup_test_dir(test_name);
+        
+        // Create a script that exits with code > 128 (simulating panic/abnormal termination)
+        let script_path = test_dir.join("test_script.sh");
+        #[cfg(unix)]
+        {
+            fs::write(&script_path, "#!/bin/bash\nexit 255\n").unwrap();
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&script_path, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        #[cfg(windows)]
+        {
+            // Windows batch files can't easily exit with > 128, so we'll skip this test
+            // or use a different approach
+            fs::write(&script_path, "@echo off\nexit /b 255\n").unwrap();
+        }
+        
+        let result = execute_post_script(script_path, "test_arg");
+        // The function should return an error for exit codes >= 128
+        assert!(result.is_err(), "Should return error for exit code >= 128");
+        
+        let error_msg = result.unwrap_err().to_string();
+        assert!(error_msg.contains("panicked") || error_msg.contains("255"), 
+            "Error should mention panic or the exit code");
+        
+        cleanup_test_dir(test_name);
+    }
+
+    #[test]
+    fn test_execute_post_script_with_argument() {
+        let test_name = "post_script_arg";
+        let test_dir = setup_test_dir(test_name);
+        
+        // Create a script that writes the argument to a file
+        let script_path = test_dir.join("test_script.sh");
+        let output_file = test_dir.join("output.txt");
+        
+        #[cfg(unix)]
+        {
+            let script_content = format!("#!/bin/bash\necho \"$1\" > {:?}\nexit 0\n", output_file);
+            fs::write(&script_path, script_content).unwrap();
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&script_path, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        #[cfg(windows)]
+        {
+            let script_content = format!("@echo off\necho %1 > {:?}\nexit /b 0\n", output_file);
+            fs::write(&script_path, script_content).unwrap();
+        }
+        
+        let test_arg = "test_argument_value";
+        let result = execute_post_script(script_path, test_arg);
+        assert!(result.is_ok(), "Script should execute successfully");
+        
+        // Verify the argument was passed correctly
+        if output_file.exists() {
+            let content = fs::read_to_string(&output_file).unwrap();
+            assert!(content.contains(test_arg), "Script should receive the argument");
+        }
+        
+        cleanup_test_dir(test_name);
+    }
+
+    #[test]
+    fn test_create_archive_empty_base_directory() {
+        let test_name = "empty_base_dir";
+        let test_dir = setup_test_dir(test_name);
+        
+        // Create an empty directory (no files, no subdirectories)
+        let empty_dir = test_dir.join("empty");
+        fs::create_dir(&empty_dir).unwrap();
+        
+        let archive_path = test_dir.join("empty.tar.gz");
+        
+        // Should succeed even with empty directory
+        create_archive(
+            &empty_dir,
+            &archive_path,
+            &None,
+            &[],
+            None,
+            Some(6),
+            None,
+            None,
+        ).unwrap();
+        
+        // Archive should exist and be valid
+        assert!(archive_path.exists(), "Archive should be created for empty directory");
+        
+        // Extract and verify contents
+        let entries = extract_archive_contents(&archive_path);
+        
+        // Should contain at least the path file (.seg_arc.path)
+        assert!(entries.iter().any(|e| e.contains(".seg_arc.path")), 
+            "Archive should contain path file");
+        
+        cleanup_test_dir(test_name);
+    }
+
+    #[test]
+    fn test_create_archive_compression_level_validation() {
+        let test_name = "compression_validation";
+        let test_dir = setup_test_dir(test_name);
+        
+        // Create a test file
+        fs::write(test_dir.join("file.txt"), b"test content").unwrap();
+        let archive_path = test_dir.join("test.tar.gz");
+        
+        // Test valid compression levels (0-9)
+        for level in 0..=9 {
+            let result = create_archive(
+                &test_dir,
+                &archive_path,
+                &None,
+                &[],
+                None,
+                Some(level),
+                None,
+                None,
+            );
+            assert!(result.is_ok(), "Compression level {} should be valid", level);
+        }
+        
+        // Test invalid compression level (> 9)
+        let result = create_archive(
+            &test_dir,
+            &archive_path,
+            &None,
+            &[],
+            None,
+            Some(10),
+            None,
+            None,
+        );
+        assert!(result.is_err(), "Compression level 10 should be invalid");
+        let error_msg = result.unwrap_err().to_string();
+        assert!(error_msg.contains("Compression level must be between 0 and 9"), 
+            "Error should mention valid range");
+        
+        // Test very large compression level
+        let result = create_archive(
+            &test_dir,
+            &archive_path,
+            &None,
+            &[],
+            None,
+            Some(100),
+            None,
+            None,
+        );
+        assert!(result.is_err(), "Compression level 100 should be invalid");
         
         cleanup_test_dir(test_name);
     }

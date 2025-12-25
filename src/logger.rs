@@ -51,7 +51,7 @@ pub fn set_log_path(log_handle: &Handle, log_path: &PathBuf, log_level: LevelFil
 }
 
 /// Helper function to replace placeholders in a path
-fn replace_placeholders(path: &PathBuf) -> PathBuf {
+pub(crate) fn replace_placeholders(path: &PathBuf) -> PathBuf {
     let now = Local::now();
     let path_str = path.display().to_string()
 
@@ -59,4 +59,68 @@ fn replace_placeholders(path: &PathBuf) -> PathBuf {
         .replace("%D", &now.format("%Y%m%d").to_string());
     
     PathBuf::from(path_str)
+}
+
+/// --- Tests --- ///
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+    use chrono::Local;
+
+    #[test]
+    fn test_replace_placeholders_date() {
+        let path = PathBuf::from("/tmp/log_%D.log");
+        let result = replace_placeholders(&path);
+        
+        let expected_date = Local::now().format("%Y%m%d").to_string();
+        let expected_path = format!("/tmp/log_{}.log", expected_date);
+        
+        assert_eq!(result, PathBuf::from(expected_path), "Date placeholder should be replaced");
+    }
+
+    #[test]
+    fn test_replace_placeholders_multiple_date() {
+        let path = PathBuf::from("/tmp/%D/log_%D.log");
+        let result = replace_placeholders(&path);
+        
+        let expected_date = Local::now().format("%Y%m%d").to_string();
+        let expected_path = format!("/tmp/{}/log_{}.log", expected_date, expected_date);
+        
+        assert_eq!(result, PathBuf::from(expected_path), "All date placeholders should be replaced");
+    }
+
+    #[test]
+    fn test_replace_placeholders_no_placeholders() {
+        let path = PathBuf::from("/tmp/log.log");
+        let result = replace_placeholders(&path);
+        
+        assert_eq!(result, path, "Path without placeholders should be unchanged");
+    }
+
+    #[test]
+    fn test_replace_placeholders_consistency() {
+        let path = PathBuf::from("/tmp/log_%D.log");
+        
+        // Call multiple times and verify consistency (within the same second)
+        let result1 = replace_placeholders(&path);
+        let result2 = replace_placeholders(&path);
+        
+        assert_eq!(result1, result2, "Placeholder replacement should be consistent within the same second");
+    }
+
+    #[test]
+    fn test_replace_placeholders_partial_match() {
+        // Test that %D in %%D gets replaced (current behavior - simple string replace)
+        let path = PathBuf::from("/tmp/log_%%D.log");
+        let result = replace_placeholders(&path);
+        
+        // Current implementation uses simple string replace, so %%D becomes %<date>
+        let date_str = Local::now().format("%Y%m%d").to_string();
+        let result_str = result.to_string_lossy();
+        // The %D inside %%D will be replaced, resulting in %<date>
+        assert!(result_str.contains(&date_str), "Date should be inserted even in %%D pattern");
+        assert!(result_str.contains("%"), "Should still contain a percent sign");
+    }
 }

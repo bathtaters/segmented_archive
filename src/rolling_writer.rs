@@ -19,7 +19,24 @@ pub struct RollingWriter {
 
 impl RollingWriter {
     /// Create a new multi-part file writer
+    /// 
+    /// # Arguments
+    /// * `base_path` - Base path for the output file(s)
+    /// * `max_size` - Maximum size per part file in bytes. Must be >= 1 if Some.
+    ///                If None, all data is written to a single file.
+    /// 
+    /// # Errors
+    /// Returns an error if `max_size` is `Some(0)` (must be at least 1 byte)
     pub fn new(base_path: PathBuf, max_size: Option<usize>) -> io::Result<Self> {
+        if let Some(size) = max_size {
+            if size == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "max_size must be at least 1 byte: 0"
+                ));
+            }
+        }
+        
         let mut writer = Self {
             current_file: None,
             current_path: None,
@@ -355,6 +372,100 @@ mod tests {
         // Should create 2 parts (30 + 30 + 30 = 90, but first part gets 50, second gets 40)
         assert!(get_test_dir(test_name).join("test.tar.gz.part001").exists());
         assert!(get_test_dir(test_name).join("test.tar.gz.part002").exists());
+        
+        cleanup_test_dir(test_name);
+    }
+
+    #[test]
+    fn test_rolling_writer_max_size_zero() {
+        let test_name = "max_size_zero";
+        setup_test_dir(test_name);
+        
+        let base_path = get_test_dir(test_name).join("test.tar.gz");
+        
+        // max_size of 0 should return an error
+        let result = RollingWriter::new(base_path.clone(), Some(0));
+        assert!(result.is_err(), "max_size of 0 should return error");
+        
+        if let Err(error) = result {
+            assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+            assert!(error.to_string().contains("at least 1 byte"), 
+                "Error should mention minimum size requirement");
+        }
+        
+        cleanup_test_dir(test_name);
+    }
+
+    #[test]
+    fn test_rolling_writer_max_size_one() {
+        let test_name = "max_size_one";
+        setup_test_dir(test_name);
+        
+        let base_path = get_test_dir(test_name).join("test.tar.gz");
+        let mut writer = RollingWriter::new(base_path.clone(), Some(1)).unwrap();
+        
+        // Write 3 bytes - should create 3 parts
+        let data = vec![1u8, 2u8, 3u8];
+        writer.write_all(&data).unwrap();
+        writer.finalize().unwrap();
+        
+        // Should create 3 part files
+        assert!(get_test_dir(test_name).join("test.tar.gz.part001").exists());
+        assert!(get_test_dir(test_name).join("test.tar.gz.part002").exists());
+        assert!(get_test_dir(test_name).join("test.tar.gz.part003").exists());
+        
+        // Verify each part has exactly 1 byte
+        for i in 1..=3 {
+            let part_path = get_test_dir(test_name).join(format!("test.tar.gz.part{:03}", i));
+            let size = fs::metadata(&part_path).unwrap().len() as usize;
+            assert_eq!(size, 1, "Part {} should have exactly 1 byte", i);
+        }
+        
+        cleanup_test_dir(test_name);
+    }
+
+    #[test]
+    fn test_rolling_writer_max_size_very_large() {
+        let test_name = "max_size_large";
+        setup_test_dir(test_name);
+        
+        let base_path = get_test_dir(test_name).join("test.tar.gz");
+        // Use a very large max_size (1GB)
+        let max_size = 1_000_000_000;
+        let mut writer = RollingWriter::new(base_path.clone(), Some(max_size)).unwrap();
+        
+        // Write small amount of data - should all go to single part
+        let data = vec![0u8; 1000];
+        writer.write_all(&data).unwrap();
+        writer.finalize().unwrap();
+        
+        // Should create single file (renamed to base_path)
+        assert!(base_path.exists());
+        assert!(!get_test_dir(test_name).join("test.tar.gz.part001").exists());
+        
+        let size = fs::metadata(&base_path).unwrap().len() as usize;
+        assert_eq!(size, 1000, "File should contain all 1000 bytes");
+        
+        cleanup_test_dir(test_name);
+    }
+
+    #[test]
+    fn test_rolling_writer_max_size_usize_max() {
+        let test_name = "max_size_max";
+        setup_test_dir(test_name);
+        
+        let base_path = get_test_dir(test_name).join("test.tar.gz");
+        // Use usize::MAX as max_size (should work, though impractical)
+        let max_size = usize::MAX;
+        let mut writer = RollingWriter::new(base_path.clone(), Some(max_size)).unwrap();
+        
+        // Write small amount of data
+        let data = vec![0u8; 100];
+        writer.write_all(&data).unwrap();
+        writer.finalize().unwrap();
+        
+        // Should create single file
+        assert!(base_path.exists());
         
         cleanup_test_dir(test_name);
     }

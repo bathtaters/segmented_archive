@@ -134,6 +134,9 @@ pub fn read_hash_file(hash_file_path: &Path) -> Result<HashMap<String, String>> 
         if let Some(equal_pos) = line.find('=') {
             let key = line[..equal_pos].trim().to_string();
             let hash = line[equal_pos + 1..].trim().to_string();
+            if hashes.contains_key(&key) {
+                warn!("Duplicate key in hash file (Last value is used): {}", key);
+            }
             hashes.insert(key, hash);
         } else {
             warn!("Invalid line in hash file (line {}): {}", line_num + 1, line);
@@ -705,6 +708,181 @@ mod tests {
         
         // Hash should change when symlink path changes (even if target is same)
         assert_ne!(hash1, hash2, "Hash should change when symlink path changes");
+        
+        cleanup_test_dir(test_name);
+    }
+
+    #[test]
+    fn test_hash_broken_symlink() {
+        let test_name = "broken_symlink";
+        let test_dir = setup_test_dir(test_name);
+        
+        // Create a regular file for comparison
+        let regular_file = test_dir.join("regular.txt");
+        fs::write(&regular_file, b"content").unwrap();
+        let hash_with_regular = compute_segment_hash(&test_dir, &[], None).unwrap();
+        
+        // Create a broken symlink (pointing to non-existent file)
+        let broken_symlink = test_dir.join("broken_link.txt");
+        let non_existent_target = test_dir.join("nonexistent.txt");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&non_existent_target, &broken_symlink).unwrap();
+        #[cfg(windows)]
+        std::os::windows::fs::symlink_file(&non_existent_target, &broken_symlink).unwrap();
+        
+        // Hash should succeed even with broken symlink (hashes the target path string)
+        let hash_with_broken = compute_segment_hash(&test_dir, &[], None).unwrap();
+        
+        // Hash should be different (broken symlink adds a new path)
+        assert_ne!(hash_with_regular, hash_with_broken, "Hash should change when broken symlink is added");
+        
+        // Hash should be consistent across multiple calls
+        let hash_with_broken2 = compute_segment_hash(&test_dir, &[], None).unwrap();
+        assert_eq!(hash_with_broken, hash_with_broken2, "Hash should be consistent for broken symlink");
+        
+        // Change the broken symlink target path (still broken, but different target)
+        fs::remove_file(&broken_symlink).unwrap();
+        let different_target = test_dir.join("different_nonexistent.txt");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&different_target, &broken_symlink).unwrap();
+        #[cfg(windows)]
+        std::os::windows::fs::symlink_file(&different_target, &broken_symlink).unwrap();
+        
+        let hash_with_different_broken = compute_segment_hash(&test_dir, &[], None).unwrap();
+        
+        // Hash should change when symlink target path changes (even if both are broken)
+        assert_ne!(hash_with_broken, hash_with_different_broken, "Hash should change when broken symlink target path changes");
+        
+        cleanup_test_dir(test_name);
+    }
+
+    #[test]
+    fn test_read_hash_file_malformed_line() {
+        let test_name = "hash_malformed";
+        let test_dir = setup_test_dir(test_name);
+        let hash_file = test_dir.join("test.hash");
+        
+        // Write hash file with malformed line (no equals sign)
+        let mut file = fs::File::create(&hash_file).unwrap();
+        writeln!(file, "segment1=abc123").unwrap();
+        writeln!(file, "malformed_line_no_equals").unwrap();
+        writeln!(file, "segment2=def456").unwrap();
+        file.sync_all().unwrap();
+        
+        // Should read valid entries and warn about invalid line
+        let hashes = read_hash_file(&hash_file).unwrap();
+        assert_eq!(hashes.len(), 2, "Should read 2 valid entries");
+        assert_eq!(hashes.get("segment1"), Some(&"abc123".to_string()));
+        assert_eq!(hashes.get("segment2"), Some(&"def456".to_string()));
+        
+        cleanup_test_dir(test_name);
+    }
+
+    #[test]
+    fn test_read_hash_file_duplicate_keys() {
+        let test_name = "hash_duplicate";
+        let test_dir = setup_test_dir(test_name);
+        let hash_file = test_dir.join("test.hash");
+        
+        // Write hash file with duplicate keys (last one wins)
+        let mut file = fs::File::create(&hash_file).unwrap();
+        writeln!(file, "segment1=abc123").unwrap();
+        writeln!(file, "segment1=def456").unwrap();
+        writeln!(file, "segment2=ghi789").unwrap();
+        file.sync_all().unwrap();
+        
+        // Should read entries (last value for duplicate key wins)
+        let hashes = read_hash_file(&hash_file).unwrap();
+        assert_eq!(hashes.len(), 2, "Should have 2 unique keys");
+        assert_eq!(hashes.get("segment1"), Some(&"def456".to_string()), "Last value should win");
+        assert_eq!(hashes.get("segment2"), Some(&"ghi789".to_string()));
+        
+        cleanup_test_dir(test_name);
+    }
+
+    #[test]
+    fn test_read_hash_file_very_long_line() {
+        let test_name = "hash_long_line";
+        let test_dir = setup_test_dir(test_name);
+        let hash_file = test_dir.join("test.hash");
+        
+        // Write hash file with very long line (10KB key, 10KB value)
+        let long_key = "a".repeat(10000);
+        let long_value = "b".repeat(10000);
+        let mut file = fs::File::create(&hash_file).unwrap();
+        writeln!(file, "{}={}", long_key, long_value).unwrap();
+        writeln!(file, "segment2=normal").unwrap();
+        file.sync_all().unwrap();
+        
+        // Should handle long lines without issues
+        let hashes = read_hash_file(&hash_file).unwrap();
+        assert_eq!(hashes.len(), 2, "Should read both entries");
+        assert_eq!(hashes.get(&long_key), Some(&long_value));
+        assert_eq!(hashes.get("segment2"), Some(&"normal".to_string()));
+        
+        cleanup_test_dir(test_name);
+    }
+
+    #[test]
+    fn test_read_hash_file_empty_key() {
+        let test_name = "hash_empty_key";
+        let test_dir = setup_test_dir(test_name);
+        let hash_file = test_dir.join("test.hash");
+        
+        // Write hash file with empty key
+        let mut file = fs::File::create(&hash_file).unwrap();
+        writeln!(file, "=abc123").unwrap();
+        writeln!(file, "segment2=def456").unwrap();
+        file.sync_all().unwrap();
+        
+        // Should handle empty key (though unusual)
+        let hashes = read_hash_file(&hash_file).unwrap();
+        assert_eq!(hashes.len(), 2, "Should read both entries");
+        assert_eq!(hashes.get(""), Some(&"abc123".to_string()));
+        assert_eq!(hashes.get("segment2"), Some(&"def456".to_string()));
+        
+        cleanup_test_dir(test_name);
+    }
+
+    #[test]
+    fn test_read_hash_file_empty_value() {
+        let test_name = "hash_empty_value";
+        let test_dir = setup_test_dir(test_name);
+        let hash_file = test_dir.join("test.hash");
+        
+        // Write hash file with empty value
+        let mut file = fs::File::create(&hash_file).unwrap();
+        writeln!(file, "segment1=").unwrap();
+        writeln!(file, "segment2=def456").unwrap();
+        file.sync_all().unwrap();
+        
+        // Should handle empty value
+        let hashes = read_hash_file(&hash_file).unwrap();
+        assert_eq!(hashes.len(), 2, "Should read both entries");
+        assert_eq!(hashes.get("segment1"), Some(&"".to_string()));
+        assert_eq!(hashes.get("segment2"), Some(&"def456".to_string()));
+        
+        cleanup_test_dir(test_name);
+    }
+
+    #[test]
+    fn test_read_hash_file_multiple_equals() {
+        let test_name = "hash_multiple_equals";
+        let test_dir = setup_test_dir(test_name);
+        let hash_file = test_dir.join("test.hash");
+        
+        // Write hash file with multiple equals signs (first one is delimiter)
+        let mut file = fs::File::create(&hash_file).unwrap();
+        writeln!(file, "segment1=abc=123=xyz").unwrap();
+        writeln!(file, "segment2=def456").unwrap();
+        file.sync_all().unwrap();
+        
+        // Should use first equals as delimiter
+        let hashes = read_hash_file(&hash_file).unwrap();
+        assert_eq!(hashes.len(), 2, "Should read both entries");
+        assert_eq!(hashes.get("segment1"), Some(&"abc=123=xyz".to_string()), 
+            "Value should include all content after first equals");
+        assert_eq!(hashes.get("segment2"), Some(&"def456".to_string()));
         
         cleanup_test_dir(test_name);
     }
