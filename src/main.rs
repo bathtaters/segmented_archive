@@ -69,6 +69,9 @@ fn main() -> Result<()> {
     };
 
     // Setup output directory
+    if output_path.exists() && !output_path.is_dir() {
+        return Err(anyhow!("Output path exists but is not a directory: {:?}", output_path));
+    }
     if let Some(dir) = output_path.parent() {
         if !dir.exists() {
             return Err(anyhow!("Output directory not found: {:?}", dir));
@@ -118,13 +121,14 @@ fn main() -> Result<()> {
                 segment_hashes.insert(name.clone(), hash.clone());
             }
             Err(e) => {
-                
                 error!("Failed to compute hash for segment '{}': {}", name, e);
                 if CRASH_ON_HASH_FAILURE {
                     return Err(anyhow!("Failed to compute hash for segment '{}'", name))
                 } else {
                     info!("Forcing backup of segment '{}' due to hash failure.", name);
-                    segment_hashes.remove(name); // Remove failed segment from hash file
+                    segment_hashes.remove(name);
+                    // Remove this segment from the hash file so it will be backed up
+                    // on the next run (even if unchanged) because it can't be hashed.
                 }
             }
         }
