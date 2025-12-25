@@ -115,10 +115,7 @@ fn append_dir_contents(
         if path.is_dir() {
             append_dir_contents(tar, base_dir, &path, exclusions, ignore_patterns)?;
         } else {
-            // Correctly map path relative to the archive root
-            let relative_path = path.strip_prefix(base_dir)
-                .context(format!("Failed to get relative path for {:?}", path))?;
-            tar.append_path_with_name(&path, relative_path)?;
+            append_file(tar, &path, base_dir)?;
         }
     }
 
@@ -134,6 +131,32 @@ fn append_dir_contents(
         }
     }
     Ok(())
+}
+
+/// Append a file to the archive
+fn append_file(tar: &mut tar::Builder<GzEncoder<RollingWriter>>, path: &Path, base_dir: &Path) -> Result<()> {
+    // Correctly map path relative to the archive root
+    let relative_path = path.strip_prefix(base_dir)
+    .context(format!("Failed to get relative path for {:?}", path))?;
+
+    // Check if this is a symlink
+    let metadata = fs::symlink_metadata(&path)
+        .context(format!("Failed to read metadata for: {:?}", path))?;
+
+    if metadata.file_type().is_symlink() {
+        // Handle symlinks (including broken ones)
+        let target = fs::read_link(&path)
+            .context(format!("Failed to read symlink target: {:?}", path))?;
+        let mut header = tar::Header::new_gnu();
+        header.set_entry_type(tar::EntryType::Symlink);
+        header.set_mode(FILE_MODE_READ);
+        tar.append_link(&mut header, relative_path, &target)
+            .context(format!("Failed to add symlink to archive: {:?}", path))
+    } else {
+        // Regular file
+        tar.append_path_with_name(&path, relative_path)
+            .context(format!("Failed to add file to archive: {:?}", path))
+    }
 }
 
 
