@@ -154,16 +154,15 @@ fn main() -> Result<()> {
             return Err(anyhow!("Failed on segment '{}'", name));
         }
         info!("Successfully created archive: {:?}", archive_path);
-    }
-
-    // Write updated hash file
-    if let Some(hash_file) = hash_file {
-        if let Err(e) = write_hash_file(&hash_file, &segment_hashes) {
-            info!("New hashes (You can manually update the hash file if you need to): {:?}", segment_hashes);
-            error!("Failed to write new hashes to '{}': {}", hash_file.display(), e);
-            return Err(anyhow!("Failed to update hash file"));
+        
+        if let Some(hash_file) = &hash_file {
+            if let Err(e) = write_hash_file(hash_file, &segment_hashes) {
+                info!("New hashes (You can manually update the hash file if you need to): {:?}", segment_hashes);
+                error!("Failed to write new hashes to '{}': {}", hash_file.display(), e);
+            } else {
+                info!("Updated hash file: {:?}", hash_file);
+            }
         }
-        info!("Updated hash file: {:?}", hash_file);
     }
 
     info!("Backup process finished.");
