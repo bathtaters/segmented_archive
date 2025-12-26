@@ -4,6 +4,7 @@ use flate2::Compression;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::io;
+use std::io::{BufRead, BufReader};
 use std::fs;
 use log::{info,warn};
 use globset::{GlobSet, GlobSetBuilder};
@@ -158,30 +159,8 @@ fn append_file(tar: &mut tar::Builder<GzEncoder<RollingWriter>>, path: &Path, ba
 pub fn execute_script(script_path: PathBuf, arg: &str) -> io::Result<i32> {
     info!("Executing script: {:?}", script_path);
 
-    match Command::new(&script_path).arg(arg).status() {
-        Ok(status) => {
-            let exit_code = match status.code() {
-                Some(code) => code,
-                None => {
-                    if status.success() {
-                        0
-                    } else {
-                        1
-                    }
-                }
-            };
-
-            if exit_code == 0 {
-                info!("Script finished successfully.");
-                Ok(0)
-            } else if exit_code < PROCESS_EXIT_CODE_THRESHOLD && exit_code > 0 {
-                warn!("Script finished with error: {}", status);
-                Ok(exit_code)
-            } else {
-                Err(io::Error::new(io::ErrorKind::Other, format!("Script panicked: {:?}", status)))
-            }
-        }
-
+    let output = match Command::new(&script_path).arg(arg).output() {
+        Ok(output) => output,
         Err(e) => {
             if e.kind() == io::ErrorKind::PermissionDenied {
                 // Handle common errors
@@ -195,6 +174,46 @@ pub fn execute_script(script_path: PathBuf, arg: &str) -> io::Result<i32> {
             }
             return Err(io::Error::new(io::ErrorKind::Other, e.to_string()))
         }
+    };
+
+    // Transfer stdout/stderr to the logger
+    let stdout_reader = BufReader::new(output.stdout.as_slice());
+    let stderr_reader = BufReader::new(output.stderr.as_slice());
+    for line in stdout_reader.lines() {
+        if let Ok(line) = line {
+            if !line.trim().is_empty() {
+                info!("Script> {}", line);
+            }
+        }
+    }
+    for line in stderr_reader.lines() {
+        if let Ok(line) = line {
+            if !line.trim().is_empty() {
+                warn!("Script> {}", line);
+            }
+        }
+    }
+
+    // Determine exit code
+    let exit_code = match output.status.code() {
+        Some(code) => code,
+        None => {
+            if output.status.success() {
+                0
+            } else {
+                1
+            }
+        }
+    };
+
+    if exit_code == 0 {
+        info!("Script finished successfully.");
+        Ok(0)
+    } else if exit_code < PROCESS_EXIT_CODE_THRESHOLD && exit_code > 0 {
+        warn!("Script finished with error code: {}", exit_code);
+        Ok(exit_code)
+    } else {
+        Err(io::Error::new(io::ErrorKind::Other, format!("Script panicked: {:?}", output.status)))
     }
 }
 
