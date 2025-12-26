@@ -11,7 +11,7 @@ use std::env;
 use log::{info, error, LevelFilter};
 use crate::logger::{init_logger, set_log_path};
 use crate::hasher::{compute_segment_hash, read_hash_file, write_hash_file};
-use crate::helpers::{create_archive, build_ignore_matcher};
+use crate::helpers::{create_archive, build_ignore_matcher, execute_script};
 
 // --- Structs ---
 
@@ -24,6 +24,7 @@ struct Config {
     output_path: Option<PathBuf>,
     root_path: Option<PathBuf>,
     post_script: Option<PathBuf>,
+    skip_script: Option<PathBuf>,
     hash_file: Option<PathBuf>,
     log_file: Option<PathBuf>,
     compression_level: Option<u32>,
@@ -51,6 +52,7 @@ fn main() -> Result<()> {
         output_path,
         root_path,
         post_script,
+        skip_script,
         hash_file,
         log_file,
         compression_level,
@@ -103,6 +105,9 @@ fn main() -> Result<()> {
             continue;
         }
 
+        // Generate archive path
+        let archive_path = output_path.join(format!("{}.tar.gz", name));
+
         // List paths to exclude from the current segment
         let exclusions = get_exclusions(&all_paths, path);
 
@@ -111,6 +116,10 @@ fn main() -> Result<()> {
             Ok(hash) => {
                 if segment_hashes.get(name) == Some(&hash) {
                     info!("Segment '{}' has not changed, skipping", name);
+                    if let Some(ref script) = skip_script {
+                        // Execute skip_script if provided
+                        execute_script(script.clone(), &archive_path.display().to_string())?;
+                    }
                     continue;
                 } else {
                     info!("Computed new hash for segment '{}'", name);
@@ -131,8 +140,6 @@ fn main() -> Result<()> {
         }
 
         // Create the archive
-        let archive_path = output_path.join(format!("{}.tar.gz", name));
-
         if let Err(e) = create_archive(
             path,
             &archive_path,

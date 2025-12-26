@@ -35,6 +35,7 @@ All fields (unless otherwise noted) are optional strings.
 - **`output_path`**: Folder to save all generated archives in _(Default: `/tmp`)_.
 - **`root_path`**: Relative base path to use when restoring _(Default: `/`)_.
 - **`post_script`**: Script to execute after each file segment is closed _(Default: No script)_.
+- **`skip_script`**: Script to execute when a file is skipped (Due to no changes, i.e. a matching hash) _(Default: No script)_.
 - **`hash_file`**: Path to an existing or future hash file. This will be used to only archive changed segments. _(Default: Archive all)_.
 - **`log_file`**: Path to generate logs. `%D` is replaced with a date-stamp _(Default: No log)_.
 - **`compression_level`**: Level of GZip compression to use _(`0 - 9 uint`, Default: `6`)_.

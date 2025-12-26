@@ -57,7 +57,7 @@ pub fn create_archive(
     };
     let mut file = RollingWriter::new(output_path.to_path_buf(), max_size_bytes)?;
     if let Some(script) = script_path {
-        let callback = move |filename: &String| execute_post_script(script.to_owned(), filename.as_str());
+        let callback = move |filename: &String| execute_script(script.to_owned(), filename.as_str());
         file.set_listener(callback);
     }
     let enc = GzEncoder::new(file, comp);
@@ -155,8 +155,8 @@ fn append_file(tar: &mut tar::Builder<GzEncoder<RollingWriter>>, path: &Path, ba
 
 
 /// Executes an external script, returning exit code.
-pub(crate) fn execute_post_script(script_path: PathBuf, arg: &str) -> io::Result<i32> {
-    info!("Executing post-script: {:?}", script_path);
+pub fn execute_script(script_path: PathBuf, arg: &str) -> io::Result<i32> {
+    info!("Executing script: {:?}", script_path);
 
     match Command::new(&script_path).arg(arg).status() {
         Ok(status) => {
@@ -172,13 +172,13 @@ pub(crate) fn execute_post_script(script_path: PathBuf, arg: &str) -> io::Result
             };
 
             if exit_code == 0 {
-                info!("Post-script finished successfully.");
+                info!("Script finished successfully.");
                 Ok(0)
             } else if exit_code < PROCESS_EXIT_CODE_THRESHOLD && exit_code > 0 {
-                warn!("Post-script finished with error: {}", status);
+                warn!("Script finished with error: {}", status);
                 Ok(exit_code)
             } else {
-                Err(io::Error::new(io::ErrorKind::Other, format!("Post-script panicked: {:?}", status)))
+                Err(io::Error::new(io::ErrorKind::Other, format!("Script panicked: {:?}", status)))
             }
         }
 
@@ -645,7 +645,7 @@ mod tests {
     }
 
     #[test]
-    fn test_execute_post_script_success() {
+    fn test_execute_script_success() {
         let test_name = "post_script_success";
         let test_dir = setup_test_dir(test_name);
         
@@ -663,7 +663,7 @@ mod tests {
             fs::write(&script_path, "@echo off\nexit /b 0\n").unwrap();
         }
         
-        let result = execute_post_script(script_path, "test_arg");
+        let result = execute_script(script_path, "test_arg");
         assert!(result.is_ok(), "Script should execute successfully");
         assert_eq!(result.unwrap(), 0, "Script should return exit code 0");
         
@@ -671,7 +671,7 @@ mod tests {
     }
 
     #[test]
-    fn test_execute_post_script_non_zero_exit() {
+    fn test_execute_script_non_zero_exit() {
         let test_name = "post_script_non_zero";
         let test_dir = setup_test_dir(test_name);
         
@@ -688,7 +688,7 @@ mod tests {
             fs::write(&script_path, "@echo off\nexit /b 42\n").unwrap();
         }
         
-        let result = execute_post_script(script_path, "test_arg");
+        let result = execute_script(script_path, "test_arg");
         assert!(result.is_ok(), "Script execution should not panic");
         assert_eq!(result.unwrap(), 42, "Script should return exit code 42");
         
@@ -696,21 +696,21 @@ mod tests {
     }
 
     #[test]
-    fn test_execute_post_script_script_not_found() {
+    fn test_execute_script_script_not_found() {
         let test_name = "post_script_not_found";
         let test_dir = setup_test_dir(test_name);
         
         // Try to execute a non-existent script
         let script_path = test_dir.join("nonexistent_script.sh");
         
-        let result = execute_post_script(script_path, "test_arg");
+        let result = execute_script(script_path, "test_arg");
         assert!(result.is_err(), "Should return error for non-existent script");
         
         cleanup_test_dir(test_name);
     }
 
     #[test]
-    fn test_execute_post_script_no_execute_permission() {
+    fn test_execute_script_no_execute_permission() {
         let test_name = "post_script_no_exec";
         let test_dir = setup_test_dir(test_name);
         
@@ -724,7 +724,7 @@ mod tests {
             // Remove execute permission
             fs::set_permissions(&script_path, fs::Permissions::from_mode(0o644)).unwrap();
             
-            let result = execute_post_script(script_path.clone(), "test_arg");
+            let result = execute_script(script_path.clone(), "test_arg");
             assert!(result.is_err(), "Should return error for script without execute permission");
             
             // Verify the error message mentions permission
@@ -743,7 +743,7 @@ mod tests {
     }
 
     #[test]
-    fn test_execute_post_script_exit_code_above_128() {
+    fn test_execute_script_exit_code_above_128() {
         let test_name = "post_script_panic";
         let test_dir = setup_test_dir(test_name);
         
@@ -762,7 +762,7 @@ mod tests {
             fs::write(&script_path, "@echo off\nexit /b 255\n").unwrap();
         }
         
-        let result = execute_post_script(script_path, "test_arg");
+        let result = execute_script(script_path, "test_arg");
         // The function should return an error for exit codes >= 128
         assert!(result.is_err(), "Should return error for exit code >= 128");
         
@@ -774,7 +774,7 @@ mod tests {
     }
 
     #[test]
-    fn test_execute_post_script_with_argument() {
+    fn test_execute_script_with_argument() {
         let test_name = "post_script_arg";
         let test_dir = setup_test_dir(test_name);
         
@@ -796,7 +796,7 @@ mod tests {
         }
         
         let test_arg = "test_argument_value";
-        let result = execute_post_script(script_path, test_arg);
+        let result = execute_script(script_path, test_arg);
         assert!(result.is_ok(), "Script should execute successfully");
         
         // Verify the argument was passed correctly

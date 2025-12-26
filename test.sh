@@ -92,6 +92,7 @@ ls -la "$TEST_DIR/files/test_dir_3/" | grep -E "^l|total"
 echo "output_path = \"$TEST_DIR/archives\"" > "$TEST_CFG"
 echo "root_path = \"$TEST_DIR/files\"" >> "$TEST_CFG"
 echo "post_script = \"$TEST_DIR/test_script.sh\"" >> "$TEST_CFG"
+echo "skip_script = \"$TEST_DIR/skip_script.sh\"" >> "$TEST_CFG"
 echo "hash_file = \"$TEST_DIR/logs/test.hash\"" >> "$TEST_CFG"
 echo "log_file = \"$TEST_DIR/logs/test_log_%D.log\"" >> "$TEST_CFG"
 echo "compression_level = 8" >> "$TEST_CFG"
@@ -113,6 +114,12 @@ echo "#!/bin/bash" > "$TEST_DIR/test_script.sh"
 echo "FILE_PATH=\$1" >> "$TEST_DIR/test_script.sh"
 echo "echo \"Saved archive: \$(ls -l \$FILE_PATH)\"" >> "$TEST_DIR/test_script.sh"
 chmod +x "$TEST_DIR/test_script.sh"
+
+# Create skip script that logs skipped segments
+echo "#!/bin/bash" > "$TEST_DIR/skip_script.sh"
+echo "FILE_PATH=\$1" >> "$TEST_DIR/skip_script.sh"
+echo "echo \"Path skipped: \$FILE_PATH\" >> \"$TEST_DIR/skip_log.txt\"" >> "$TEST_DIR/skip_script.sh"
+chmod +x "$TEST_DIR/skip_script.sh"
 
 echo
 echo " --- TEST SCRIPT: $TEST_DIR/test_script.sh --- "
@@ -147,12 +154,18 @@ cargo run "$TEST_CFG"
 echo
 echo " --- DIFF BETWEEN ORIGINAL AND RESTORED FILES --- "
 diff -r "$TEST_DIR/files" "$TEST_DIR/restored" || true
-echo "(You should see: 'No such file or directory' error for broken_symlink.txt, 'test_dir_4,' and 'test_file.ignore' from dirs 5 & 7)"
+echo "(You should see: 'No such file or directory' error for broken_symlink, 'test_dir_4,' and 'test_file.ignore' from dirs 5 & 7)"
 
 echo
 echo " --- SKIPS UNCHANGED SEGMENTS --- "
 echo "x" >> "$TEST_DIR/files/test_file_1.txt"
 rm -Rf "$TEST_DIR/archives"
+rm -f "$TEST_DIR/skip_log.txt"
 cargo run "$TEST_CFG"
 ls -l "$TEST_DIR/archives"
 echo "(You should only see test_base.tar.gz above)"
+
+echo
+echo " --- TESTING SKIP SCRIPT --- "
+cat "$TEST_DIR/skip_log.txt"
+echo "(You should see symlinks, large_file, and nested_dir skipped)"

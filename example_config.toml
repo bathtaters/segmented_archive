@@ -1,6 +1,7 @@
 output_path = "/tmp/segmented_archive/"
 root_path = "/home/user" # Optional: Save segments relative to this path
-post_script = "./example_config.sh"
+post_script = "./example_script.sh"
+skip_script = "./example_script.sh"
 hash_file = "/tmp/segmented_archive/segmented_archive.hash"
 log_file = "/tmp/segmented_archive/segmented_archive_%D.log"
 compression_level = 6 # Tar/GZip compression level: 0 (No compression) - 9 (Most compression)
