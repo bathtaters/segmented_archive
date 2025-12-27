@@ -6,6 +6,8 @@ use std::io::{BufReader, BufRead, Write, Read};
 use std::fs;
 use log::{warn};
 use globset::GlobSet;
+use walkdir::WalkDir;
+use rayon::prelude::*;
 use crate::helpers::is_excluded;
 
 // Buffer size for reading files during hashing (256KB)
@@ -16,8 +18,8 @@ const HASHER_BUFFER_SIZE: usize = 262144;
 /// Includes file paths in the hash to detect renames and moves
 /// Works with a src_dir that is a file or directory
 pub fn compute_segment_hash(src_dir: &Path, metadata: &fs::Metadata, exclusions: &[&PathBuf], ignore_patterns: Option<&GlobSet>) -> Result<String> {
-    let mut combined_hash: u64 = 0;
-    let mut file_count = 0;
+    let mut combined_hash: u64;
+    let file_count: usize;
     
     if metadata.is_file() {
         // Use the filename only as the relative path
@@ -25,7 +27,7 @@ pub fn compute_segment_hash(src_dir: &Path, metadata: &fs::Metadata, exclusions:
         combined_hash = hash_file(src_dir, Path::new(relative_path))?;
         file_count = 1;
     } else if metadata.is_dir() {
-        hash_dir_contents(src_dir, src_dir, exclusions, ignore_patterns, &mut combined_hash, &mut file_count)?;
+        (combined_hash, file_count) = hash_dir_contents(src_dir, exclusions, ignore_patterns)?;
     } else {
         return Err(anyhow!("Path is neither a file nor a directory: {:?}", src_dir));
     }
@@ -42,45 +44,76 @@ pub fn compute_segment_hash(src_dir: &Path, metadata: &fs::Metadata, exclusions:
 }
 
 /// Recursively hash files in a directory, applying the same exclusion logic as tar creation
+/// Returns (combined_hash, file_count)
 fn hash_dir_contents(
     base_dir: &Path,
-    current_dir: &Path,
     exclusions: &[&PathBuf],
     ignore_patterns: Option<&GlobSet>,
-    combined_hash: &mut u64,
-    file_count: &mut usize,
-) -> Result<()> {
-    for entry in fs::read_dir(current_dir)? {
-        let entry = entry?;
-        let path = entry.path();
+) -> Result<(u64, usize)> {
+    // Collect all file paths using walkdir
+    let base_iter = WalkDir::new(base_dir).follow_links(false).into_iter();
+    
+    let iter: Box<dyn Iterator<Item = Result<walkdir::DirEntry, walkdir::Error>>> = 
+        if !exclusions.is_empty() || ignore_patterns.is_some() {
+            // Filter before traversal to skip ignored/excluded directories
+            Box::new(base_iter.filter_entry(move |entry| {
+                let path = entry.path();
 
-        // Skip excluded paths (same logic as append_dir_contents)
-        if is_excluded(&path, exclusions) {
-            continue;
-        }
 
-        // Check if path matches any ignore pattern
-        if let Some(patterns) = ignore_patterns {
-            if patterns.is_match(&path) {
-                continue;
-            }
-        }
+                if is_excluded(path, exclusions) {
+                    return false;
+                }
 
-        if path.is_dir() {
-            // Recursively process subdirectories
-            hash_dir_contents(base_dir, &path, exclusions, ignore_patterns, combined_hash, file_count)?;
+                if let Some(patterns) = ignore_patterns {
+                    if patterns.is_match(path) {
+                        return false;
+                    }
+                }
+                
+                true
+            }))
         } else {
-            // Get relative path to append to the hash
-            let relative_path = path.strip_prefix(base_dir)
-                .context(format!("Failed to get relative path for {:?}", path))?;
-            
-            // Hash the file
-            let file_hash = hash_file(&path, relative_path)?;
-            *combined_hash ^= file_hash;
-            *file_count += 1;
-        }
-    }
-    Ok(())
+            // No filtering, use basic iterator
+            Box::new(base_iter)
+        };
+    
+    let file_paths: Vec<(PathBuf, PathBuf)> = iter
+        .filter_map(|entry| {
+            let entry = match entry {
+                Ok(e) => e,
+                Err(_) => return None,
+            };
+            let path = entry.path().to_path_buf();
+            let file_type = entry.file_type();
+
+            // Process files and symlinks (not directories)
+            if file_type.is_file() || file_type.is_symlink() {
+                match path.strip_prefix(base_dir) {
+                    Ok(relative_path) => Some((path.to_owned(), relative_path.to_path_buf())),
+                    Err(_) => None,
+                }
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    let file_count = file_paths.len();
+
+    // Hash files in parallel
+    let hashes: Result<Vec<u64>> = file_paths
+        .par_iter()
+        .map(|(file_path, relative_path)| {
+            hash_file(file_path, relative_path)
+        })
+        .collect();
+
+    // (Order doesn't matter for XOR)
+    let combined_hash = hashes?
+        .into_iter()
+        .fold(0u64, |acc, hash| acc ^ hash);
+
+    Ok((combined_hash, file_count))
 }
 
 /// Hash a single file + its path using xxHash
