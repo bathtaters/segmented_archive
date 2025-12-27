@@ -111,8 +111,11 @@ fn main() -> Result<()> {
         // List paths to exclude from the current segment
         let exclusions = get_exclusions(&all_paths, path);
 
+        // Read metadata for hashing/archiving
+        let metadata = fs::metadata(path).context(format!("Failed to read metadata for: {:?}", path))?;
+
         // Compute and store segment hash
-        match compute_segment_hash(path, &exclusions, ignore_matcher.as_ref()) {
+        match compute_segment_hash(path, &metadata, &exclusions, ignore_matcher.as_ref()) {
             Ok(hash) => {
                 if segment_hashes.get(name) == Some(&hash) {
                     info!("Segment '{}' has not changed, skipping", name);
@@ -142,6 +145,7 @@ fn main() -> Result<()> {
         // Create the archive
         if let Err(e) = create_archive(
             path,
+            &metadata,
             &archive_path,
             &root_path,
             &exclusions,

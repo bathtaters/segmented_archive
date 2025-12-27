@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use xxhash_rust::xxh3::Xxh3;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -14,11 +14,21 @@ const HASHER_BUFFER_SIZE: usize = 8192;
 /// Computes a hash for a segment by hashing all files (excluding folders and exclusions)
 /// Uses xxHash (xxh3) for individual files, then XORs all hashes together
 /// Includes file paths in the hash to detect renames and moves
-pub fn compute_segment_hash(src_dir: &Path, exclusions: &[&PathBuf], ignore_patterns: Option<&GlobSet>) -> Result<String> {
+/// Works with a src_dir that is a file or directory
+pub fn compute_segment_hash(src_dir: &Path, metadata: &fs::Metadata, exclusions: &[&PathBuf], ignore_patterns: Option<&GlobSet>) -> Result<String> {
     let mut combined_hash: u64 = 0;
     let mut file_count = 0;
-
-    hash_dir_contents(src_dir, src_dir, exclusions, ignore_patterns, &mut combined_hash, &mut file_count)?;
+    
+    if metadata.is_file() {
+        // Use the filename only as the relative path
+        let relative_path = src_dir.file_name().ok_or_else(|| anyhow!("Failed to get filename from path: {:?}", src_dir))?;
+        combined_hash = hash_file(src_dir, Path::new(relative_path))?;
+        file_count = 1;
+    } else if metadata.is_dir() {
+        hash_dir_contents(src_dir, src_dir, exclusions, ignore_patterns, &mut combined_hash, &mut file_count)?;
+    } else {
+        return Err(anyhow!("Path is neither a file nor a directory: {:?}", src_dir));
+    }
 
     // If no files were found, hash an empty string
     if file_count == 0 {
@@ -210,12 +220,14 @@ mod tests {
         // Create file with original name
         let file1 = test_dir.join("original.txt");
         fs::write(&file1, b"same content").unwrap();
-        let hash1 = compute_segment_hash(&test_dir, &[], None).unwrap();
+        let metadata1 = fs::metadata(&test_dir).unwrap();
+        let hash1 = compute_segment_hash(&test_dir, &metadata1, &[], None).unwrap();
         
         // Rename file (same content, different path)
         let file2 = test_dir.join("renamed.txt");
         fs::rename(&file1, &file2).unwrap();
-        let hash2 = compute_segment_hash(&test_dir, &[], None).unwrap();
+        let metadata2 = fs::metadata(&test_dir).unwrap();
+        let hash2 = compute_segment_hash(&test_dir, &metadata2, &[], None).unwrap();
         
         // Hashes should be different (path is included)
         assert_ne!(hash1, hash2, "Hash should change when filename changes");
@@ -233,14 +245,16 @@ mod tests {
         fs::create_dir(&subdir1).unwrap();
         let file1 = subdir1.join("file.txt");
         fs::write(&file1, b"same content").unwrap();
-        let hash1 = compute_segment_hash(&test_dir, &[], None).unwrap();
+        let metadata1 = fs::metadata(&test_dir).unwrap();
+        let hash1 = compute_segment_hash(&test_dir, &metadata1, &[], None).unwrap();
         
         // Move file to different subdirectory
         let subdir2 = test_dir.join("dir2");
         fs::create_dir(&subdir2).unwrap();
         let file2 = subdir2.join("file.txt");
         fs::rename(&file1, &file2).unwrap();
-        let hash2 = compute_segment_hash(&test_dir, &[], None).unwrap();
+        let metadata2 = fs::metadata(&test_dir).unwrap();
+        let hash2 = compute_segment_hash(&test_dir, &metadata2, &[], None).unwrap();
         
         // Hashes should be different (path is included)
         assert_ne!(hash1, hash2, "Hash should change when file is moved");
@@ -256,11 +270,13 @@ mod tests {
         // Create file with initial content
         let file = test_dir.join("file.txt");
         fs::write(&file, b"original content").unwrap();
-        let hash1 = compute_segment_hash(&test_dir, &[], None).unwrap();
+        let metadata1 = fs::metadata(&test_dir).unwrap();
+        let hash1 = compute_segment_hash(&test_dir, &metadata1, &[], None).unwrap();
         
         // Change file content
         fs::write(&file, b"modified content").unwrap();
-        let hash2 = compute_segment_hash(&test_dir, &[], None).unwrap();
+        let metadata2 = fs::metadata(&test_dir).unwrap();
+        let hash2 = compute_segment_hash(&test_dir, &metadata2, &[], None).unwrap();
         
         // Hashes should be different
         assert_ne!(hash1, hash2, "Hash should change when content changes");
@@ -282,12 +298,14 @@ mod tests {
         fs::create_dir_all(file2.parent().unwrap()).unwrap();
         fs::write(&file2, b"identical content").unwrap();
         
-        let hash = compute_segment_hash(&test_dir, &[], None).unwrap();
+        let metadata = fs::metadata(&test_dir).unwrap();
+        let hash = compute_segment_hash(&test_dir, &metadata, &[], None).unwrap();
         
         // Edit both files identically
         fs::write(&file1, b"new identical content").unwrap();
         fs::write(&file2, b"new identical content").unwrap();
-        let hash_after = compute_segment_hash(&test_dir, &[], None).unwrap();
+        let metadata_after = fs::metadata(&test_dir).unwrap();
+        let hash_after = compute_segment_hash(&test_dir, &metadata_after, &[], None).unwrap();
         
         // Hashes should be different (different paths = different hashes)
         assert_ne!(hash, hash_after, "Hash should change even if identical files are edited identically");
@@ -301,12 +319,50 @@ mod tests {
         let test_dir = setup_test_dir(test_name);
         
         // Empty directory should produce a hash (of empty string)
-        let hash = compute_segment_hash(&test_dir, &[], None).unwrap();
+        let metadata = fs::metadata(&test_dir).unwrap();
+        let hash = compute_segment_hash(&test_dir, &metadata, &[], None).unwrap();
         assert!(!hash.is_empty(), "Empty segment should produce a hash");
         
         // Hash should be consistent
-        let hash2 = compute_segment_hash(&test_dir, &[], None).unwrap();
+        let metadata2 = fs::metadata(&test_dir).unwrap();
+        let hash2 = compute_segment_hash(&test_dir, &metadata2, &[], None).unwrap();
         assert_eq!(hash, hash2, "Empty segment hash should be consistent");
+        
+        cleanup_test_dir(test_name);
+    }
+
+    #[test]
+    fn test_hash_single_file() {
+        let test_name = "single_file";
+        let test_dir = setup_test_dir(test_name);
+        
+        // Create a single file (not a directory)
+        let test_file = test_dir.join("backup.bak");
+        let file_content = b"test file content for backup";
+        fs::write(&test_file, file_content).unwrap();
+        
+        // Should succeed with a single file
+        let metadata1 = fs::metadata(&test_file).unwrap();
+        let hash1 = compute_segment_hash(&test_file, &metadata1, &[], None).unwrap();
+        assert!(!hash1.is_empty(), "Single file should produce a hash");
+        
+        // Hash should be consistent
+        let metadata2 = fs::metadata(&test_file).unwrap();
+        let hash2 = compute_segment_hash(&test_file, &metadata2, &[], None).unwrap();
+        assert_eq!(hash1, hash2, "Single file hash should be consistent");
+        
+        // Hash should change when content changes
+        fs::write(&test_file, b"different content").unwrap();
+        let metadata3 = fs::metadata(&test_file).unwrap();
+        let hash3 = compute_segment_hash(&test_file, &metadata3, &[], None).unwrap();
+        assert_ne!(hash1, hash3, "Hash should change when file content changes");
+        
+        // Hash should change when filename changes (even with same content)
+        let test_file2 = test_dir.join("backup2.bak");
+        fs::write(&test_file2, file_content).unwrap();
+        let metadata4 = fs::metadata(&test_file2).unwrap();
+        let hash4 = compute_segment_hash(&test_file2, &metadata4, &[], None).unwrap();
+        assert_ne!(hash1, hash4, "Hash should change when filename changes");
         
         cleanup_test_dir(test_name);
     }
@@ -319,7 +375,8 @@ mod tests {
         // Create files in main directory
         fs::write(test_dir.join("file1.txt"), b"content1").unwrap();
         fs::write(test_dir.join("file2.txt"), b"content2").unwrap();
-        let hash1 = compute_segment_hash(&test_dir, &[], None).unwrap();
+        let metadata1 = fs::metadata(&test_dir).unwrap();
+        let hash1 = compute_segment_hash(&test_dir, &metadata1, &[], None).unwrap();
         
         // Create excluded subdirectory
         let excluded_dir = test_dir.join("excluded");
@@ -328,7 +385,8 @@ mod tests {
         
         // Hash should be the same (excluded files not included)
         let exclusions = vec![&excluded_dir as &PathBuf];
-        let hash2 = compute_segment_hash(&test_dir, &exclusions, None).unwrap();
+        let metadata2 = fs::metadata(&test_dir).unwrap();
+        let hash2 = compute_segment_hash(&test_dir, &metadata2, &exclusions, None).unwrap();
         assert_eq!(hash1, hash2, "Hash should be same when excluded files are added");
         
         cleanup_test_dir(test_name);
@@ -342,7 +400,8 @@ mod tests {
         // Create files in main directory
         fs::write(test_dir.join("file1.txt"), b"content1").unwrap();
         fs::write(test_dir.join("file2.txt"), b"content2").unwrap();
-        let hash1 = compute_segment_hash(&test_dir, &[], None).unwrap();
+        let metadata1 = fs::metadata(&test_dir).unwrap();
+        let hash1 = compute_segment_hash(&test_dir, &metadata1, &[], None).unwrap();
         
         // Add .tmp files (should be ignored)
         fs::write(test_dir.join("file3.tmp"), b"content3").unwrap();
@@ -355,7 +414,8 @@ mod tests {
         let ignore_matcher = Some(builder.build().unwrap());
         
         // Hash should be the same (ignored files not included)
-        let hash2 = compute_segment_hash(&test_dir, &[], ignore_matcher.as_ref()).unwrap();
+        let metadata2 = fs::metadata(&test_dir).unwrap();
+        let hash2 = compute_segment_hash(&test_dir, &metadata2, &[], ignore_matcher.as_ref()).unwrap();
         assert_eq!(hash1, hash2, "Hash should be same when ignored .tmp files are added");
         
         cleanup_test_dir(test_name);
@@ -369,7 +429,8 @@ mod tests {
         // Create files in main directory
         fs::write(test_dir.join("file1.txt"), b"content1").unwrap();
         fs::write(test_dir.join("file2.txt"), b"content2").unwrap();
-        let hash1 = compute_segment_hash(&test_dir, &[], None).unwrap();
+        let metadata1 = fs::metadata(&test_dir).unwrap();
+        let hash1 = compute_segment_hash(&test_dir, &metadata1, &[], None).unwrap();
         
         // Add node_modules directory (should be ignored)
         let node_modules = test_dir.join("node_modules");
@@ -384,7 +445,8 @@ mod tests {
         let ignore_matcher = Some(builder.build().unwrap());
         
         // Hash should be the same (ignored directory not included)
-        let hash2 = compute_segment_hash(&test_dir, &[], ignore_matcher.as_ref()).unwrap();
+        let metadata2 = fs::metadata(&test_dir).unwrap();
+        let hash2 = compute_segment_hash(&test_dir, &metadata2, &[], ignore_matcher.as_ref()).unwrap();
         assert_eq!(hash1, hash2, "Hash should be same when ignored node_modules is added");
         
         cleanup_test_dir(test_name);
@@ -398,7 +460,8 @@ mod tests {
         // Create files in main directory
         fs::write(test_dir.join("file1.txt"), b"content1").unwrap();
         fs::write(test_dir.join("file2.txt"), b"content2").unwrap();
-        let hash1 = compute_segment_hash(&test_dir, &[], None).unwrap();
+        let metadata1 = fs::metadata(&test_dir).unwrap();
+        let hash1 = compute_segment_hash(&test_dir, &metadata1, &[], None).unwrap();
         
         // Add .DS_Store file (should be ignored)
         fs::write(test_dir.join(".DS_Store"), b"metadata").unwrap();
@@ -410,7 +473,8 @@ mod tests {
         let ignore_matcher = Some(builder.build().unwrap());
         
         // Hash should be the same (ignored file not included)
-        let hash2 = compute_segment_hash(&test_dir, &[], ignore_matcher.as_ref()).unwrap();
+        let metadata2 = fs::metadata(&test_dir).unwrap();
+        let hash2 = compute_segment_hash(&test_dir, &metadata2, &[], ignore_matcher.as_ref()).unwrap();
         assert_eq!(hash1, hash2, "Hash should be same when ignored .DS_Store is added");
         
         cleanup_test_dir(test_name);
@@ -424,7 +488,8 @@ mod tests {
         // Create files in main directory
         fs::write(test_dir.join("file1.txt"), b"content1").unwrap();
         fs::write(test_dir.join("file2.txt"), b"content2").unwrap();
-        let hash1 = compute_segment_hash(&test_dir, &[], None).unwrap();
+        let metadata1 = fs::metadata(&test_dir).unwrap();
+        let hash1 = compute_segment_hash(&test_dir, &metadata1, &[], None).unwrap();
         
         // Add node_modules at different nesting levels
         let subdir1 = test_dir.join("subdir1");
@@ -448,7 +513,8 @@ mod tests {
         let ignore_matcher = Some(builder.build().unwrap());
         
         // Hash should be the same (ignored directories not included)
-        let hash2 = compute_segment_hash(&test_dir, &[], ignore_matcher.as_ref()).unwrap();
+        let metadata2 = fs::metadata(&test_dir).unwrap();
+        let hash2 = compute_segment_hash(&test_dir, &metadata2, &[], ignore_matcher.as_ref()).unwrap();
         assert_eq!(hash1, hash2, "Hash should be same when ignored recursive node_modules are added");
         
         cleanup_test_dir(test_name);
@@ -462,7 +528,8 @@ mod tests {
         // Create files in main directory
         fs::write(test_dir.join("file1.txt"), b"content1").unwrap();
         fs::write(test_dir.join("file2.txt"), b"content2").unwrap();
-        let hash1 = compute_segment_hash(&test_dir, &[], None).unwrap();
+        let metadata1 = fs::metadata(&test_dir).unwrap();
+        let hash1 = compute_segment_hash(&test_dir, &metadata1, &[], None).unwrap();
         
         // Add multiple types of files that should be ignored
         fs::write(test_dir.join("file3.tmp"), b"content3").unwrap();
@@ -480,7 +547,8 @@ mod tests {
         let ignore_matcher = Some(builder.build().unwrap());
         
         // Hash should be the same (all ignored files/dirs not included)
-        let hash2 = compute_segment_hash(&test_dir, &[], ignore_matcher.as_ref()).unwrap();
+        let metadata2 = fs::metadata(&test_dir).unwrap();
+        let hash2 = compute_segment_hash(&test_dir, &metadata2, &[], ignore_matcher.as_ref()).unwrap();
         assert_eq!(hash1, hash2, "Hash should be same when multiple ignored patterns are added");
         
         cleanup_test_dir(test_name);
@@ -493,7 +561,8 @@ mod tests {
         
         // Create files in main directory
         fs::write(test_dir.join("file1.txt"), b"content1").unwrap();
-        let hash1 = compute_segment_hash(&test_dir, &[], None).unwrap();
+        let metadata1 = fs::metadata(&test_dir).unwrap();
+        let hash1 = compute_segment_hash(&test_dir, &metadata1, &[], None).unwrap();
         
         // Add both excluded directory and ignored files
         let excluded_dir = test_dir.join("excluded");
@@ -509,7 +578,8 @@ mod tests {
         let exclusions = vec![&excluded_dir as &PathBuf];
         
         // Hash should be the same (both excluded and ignored items not included)
-        let hash2 = compute_segment_hash(&test_dir, &exclusions, ignore_matcher.as_ref()).unwrap();
+        let metadata2 = fs::metadata(&test_dir).unwrap();
+        let hash2 = compute_segment_hash(&test_dir, &metadata2, &exclusions, ignore_matcher.as_ref()).unwrap();
         assert_eq!(hash1, hash2, "Hash should be same when both exclusions and ignore patterns are used");
         
         cleanup_test_dir(test_name);
@@ -530,16 +600,19 @@ mod tests {
         builder.add(globset::Glob::new("*.tmp").unwrap());
         let ignore_matcher = Some(builder.build().unwrap());
         
-        let hash1 = compute_segment_hash(&test_dir, &[], ignore_matcher.as_ref()).unwrap();
+        let metadata1 = fs::metadata(&test_dir).unwrap();
+        let hash1 = compute_segment_hash(&test_dir, &metadata1, &[], ignore_matcher.as_ref()).unwrap();
         
         // Change ignored file (should not affect hash)
         fs::write(test_dir.join("file2.tmp"), b"different content").unwrap();
-        let hash2 = compute_segment_hash(&test_dir, &[], ignore_matcher.as_ref()).unwrap();
+        let metadata2 = fs::metadata(&test_dir).unwrap();
+        let hash2 = compute_segment_hash(&test_dir, &metadata2, &[], ignore_matcher.as_ref()).unwrap();
         assert_eq!(hash1, hash2, "Hash should not change when ignored file changes");
         
         // Change non-ignored file (should affect hash)
         fs::write(test_dir.join("file1.txt"), b"different content").unwrap();
-        let hash3 = compute_segment_hash(&test_dir, &[], ignore_matcher.as_ref()).unwrap();
+        let metadata3 = fs::metadata(&test_dir).unwrap();
+        let hash3 = compute_segment_hash(&test_dir, &metadata3, &[], ignore_matcher.as_ref()).unwrap();
         assert_ne!(hash1, hash3, "Hash should change when non-ignored file changes");
         
         cleanup_test_dir(test_name);
@@ -558,8 +631,10 @@ mod tests {
         fs::write(subdir.join("file3.txt"), b"content3").unwrap();
         
         // Hash should be consistent across multiple calls
-        let hash1 = compute_segment_hash(&test_dir, &[], None).unwrap();
-        let hash2 = compute_segment_hash(&test_dir, &[], None).unwrap();
+        let metadata1 = fs::metadata(&test_dir).unwrap();
+        let hash1 = compute_segment_hash(&test_dir, &metadata1, &[], None).unwrap();
+        let metadata2 = fs::metadata(&test_dir).unwrap();
+        let hash2 = compute_segment_hash(&test_dir, &metadata2, &[], None).unwrap();
         assert_eq!(hash1, hash2, "Hash should be consistent for same directory");
         
         cleanup_test_dir(test_name);
@@ -663,7 +738,8 @@ mod tests {
         #[cfg(windows)]
         std::os::windows::fs::symlink_file(&target1, &symlink_path).unwrap();
         
-        let hash1 = compute_segment_hash(&test_dir, &[], None).unwrap();
+        let metadata1 = fs::metadata(&test_dir).unwrap();
+        let hash1 = compute_segment_hash(&test_dir, &metadata1, &[], None).unwrap();
         
         // Remove old symlink and create new one pointing to target2
         fs::remove_file(&symlink_path).unwrap();
@@ -672,7 +748,8 @@ mod tests {
         #[cfg(windows)]
         std::os::windows::fs::symlink_file(&target2, &symlink_path).unwrap();
         
-        let hash2 = compute_segment_hash(&test_dir, &[], None).unwrap();
+        let metadata2 = fs::metadata(&test_dir).unwrap();
+        let hash2 = compute_segment_hash(&test_dir, &metadata2, &[], None).unwrap();
         
         // Hash should change when symlink target changes
         assert_ne!(hash1, hash2, "Hash should change when symlink target changes");
@@ -696,7 +773,8 @@ mod tests {
         #[cfg(windows)]
         std::os::windows::fs::symlink_file(&target, &symlink1).unwrap();
         
-        let hash1 = compute_segment_hash(&test_dir, &[], None).unwrap();
+        let metadata1 = fs::metadata(&test_dir).unwrap();
+        let hash1 = compute_segment_hash(&test_dir, &metadata1, &[], None).unwrap();
         
         // Remove old symlink and create new one with different name (same target)
         fs::remove_file(&symlink1).unwrap();
@@ -706,7 +784,8 @@ mod tests {
         #[cfg(windows)]
         std::os::windows::fs::symlink_file(&target, &symlink2).unwrap();
         
-        let hash2 = compute_segment_hash(&test_dir, &[], None).unwrap();
+        let metadata2 = fs::metadata(&test_dir).unwrap();
+        let hash2 = compute_segment_hash(&test_dir, &metadata2, &[], None).unwrap();
         
         // Hash should change when symlink path changes (even if target is same)
         assert_ne!(hash1, hash2, "Hash should change when symlink path changes");
@@ -722,7 +801,8 @@ mod tests {
         // Create a regular file for comparison
         let regular_file = test_dir.join("regular.txt");
         fs::write(&regular_file, b"content").unwrap();
-        let hash_with_regular = compute_segment_hash(&test_dir, &[], None).unwrap();
+        let metadata1 = fs::metadata(&test_dir).unwrap();
+        let hash_with_regular = compute_segment_hash(&test_dir, &metadata1, &[], None).unwrap();
         
         // Create a broken symlink (pointing to non-existent file)
         let broken_symlink = test_dir.join("broken_link.txt");
@@ -733,13 +813,15 @@ mod tests {
         std::os::windows::fs::symlink_file(&non_existent_target, &broken_symlink).unwrap();
         
         // Hash should succeed even with broken symlink (hashes the target path string)
-        let hash_with_broken = compute_segment_hash(&test_dir, &[], None).unwrap();
+        let metadata2 = fs::metadata(&test_dir).unwrap();
+        let hash_with_broken = compute_segment_hash(&test_dir, &metadata2, &[], None).unwrap();
         
         // Hash should be different (broken symlink adds a new path)
         assert_ne!(hash_with_regular, hash_with_broken, "Hash should change when broken symlink is added");
         
         // Hash should be consistent across multiple calls
-        let hash_with_broken2 = compute_segment_hash(&test_dir, &[], None).unwrap();
+        let metadata3 = fs::metadata(&test_dir).unwrap();
+        let hash_with_broken2 = compute_segment_hash(&test_dir, &metadata3, &[], None).unwrap();
         assert_eq!(hash_with_broken, hash_with_broken2, "Hash should be consistent for broken symlink");
         
         // Change the broken symlink target path (still broken, but different target)
@@ -750,7 +832,8 @@ mod tests {
         #[cfg(windows)]
         std::os::windows::fs::symlink_file(&different_target, &broken_symlink).unwrap();
         
-        let hash_with_different_broken = compute_segment_hash(&test_dir, &[], None).unwrap();
+        let metadata4 = fs::metadata(&test_dir).unwrap();
+        let hash_with_different_broken = compute_segment_hash(&test_dir, &metadata4, &[], None).unwrap();
         
         // Hash should change when symlink target path changes (even if both are broken)
         assert_ne!(hash_with_broken, hash_with_different_broken, "Hash should change when broken symlink target path changes");

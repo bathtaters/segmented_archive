@@ -35,9 +35,10 @@ pub fn build_ignore_matcher(patterns: &[String]) -> Result<Option<GlobSet>> {
         .context("Failed to build GlobSet from ignore patterns")?))
 }
 
-/// Archives a directory, appending a path file and applying exclusions.
+/// Archives a file or directory, appending a path file and applying exclusions.
 pub fn create_archive(
     src_dir: &Path,
+    metadata: &fs::Metadata,
     output_path: &Path,
     root_path: &Option<PathBuf>,
     exclusions: &[&PathBuf],
@@ -73,7 +74,17 @@ pub fn create_archive(
     header.set_cksum(); // Removing this line will cause the archive to be corrupted
     tar.append(&header, path_str.as_bytes())?;
 
-    append_dir_contents(&mut tar, src_dir, src_dir, exclusions, ignore_patterns)?;
+    // Check if src_dir is a file or directory
+    if metadata.is_file() {
+        // Use the file's parent directory as base_dir so the relative path is just the filename
+        let base_dir = src_dir.parent()
+            .ok_or_else(|| anyhow!("File has no parent directory: {:?}", src_dir))?;
+        append_file(&mut tar, src_dir, base_dir)?;
+    } else if metadata.is_dir() {
+        append_dir_contents(&mut tar, src_dir, src_dir, exclusions, ignore_patterns)?;
+    } else {
+        return Err(anyhow!("Path is neither a file nor a directory: {:?}", src_dir));
+    }
 
     tar.finish().context("Failed to finalize tar archive")?;
     let mut writer = tar.into_inner()?.finish().context("Failed to finalize Gzip encoding")?;
@@ -157,7 +168,7 @@ fn append_file(tar: &mut tar::Builder<GzEncoder<RollingWriter>>, path: &Path, ba
 
 /// Executes an external script, returning exit code.
 pub fn execute_script(script_path: PathBuf, arg: &str) -> io::Result<i32> {
-    info!("Executing script: {:?}", script_path);
+    info!("Executing script w/ argument: {:?} {:?}", script_path, arg);
 
     let output = match Command::new(&script_path).arg(arg).output() {
         Ok(output) => output,
@@ -246,6 +257,7 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
     use std::fs;
+    use std::io::Read;
     use flate2::read::GzDecoder;
     use tar::Archive;
 
@@ -429,9 +441,11 @@ mod tests {
         let patterns = vec!["*.tmp".to_string()];
         let ignore_matcher = build_ignore_matcher(&patterns).unwrap();
         let archive_path = test_dir.join("test.tar.gz");
+        let metadata = fs::metadata(&test_dir).unwrap();
         
         create_archive(
             &test_dir,
+            &metadata,
             &archive_path,
             &None,
             &[],
@@ -469,9 +483,11 @@ mod tests {
         let patterns = vec!["**/node_modules".to_string()];
         let ignore_matcher = build_ignore_matcher(&patterns).unwrap();
         let archive_path = test_dir.join("test.tar.gz");
+        let metadata = fs::metadata(&test_dir).unwrap();
         
         create_archive(
             &test_dir,
+            &metadata,
             &archive_path,
             &None,
             &[],
@@ -506,9 +522,11 @@ mod tests {
         let patterns = vec!["**/.DS_Store".to_string()];
         let ignore_matcher = build_ignore_matcher(&patterns).unwrap();
         let archive_path = test_dir.join("test.tar.gz");
+        let metadata = fs::metadata(&test_dir).unwrap();
         
         create_archive(
             &test_dir,
+            &metadata,
             &archive_path,
             &None,
             &[],
@@ -555,9 +573,11 @@ mod tests {
         let patterns = vec!["**/node_modules".to_string()];
         let ignore_matcher = build_ignore_matcher(&patterns).unwrap();
         let archive_path = test_dir.join("test.tar.gz");
+        let metadata = fs::metadata(&test_dir).unwrap();
         
         create_archive(
             &test_dir,
+            &metadata,
             &archive_path,
             &None,
             &[],
@@ -599,9 +619,11 @@ mod tests {
         ];
         let ignore_matcher = build_ignore_matcher(&patterns).unwrap();
         let archive_path = test_dir.join("test.tar.gz");
+        let metadata = fs::metadata(&test_dir).unwrap();
         
         create_archive(
             &test_dir,
+            &metadata,
             &archive_path,
             &None,
             &[],
@@ -640,9 +662,11 @@ mod tests {
         let ignore_matcher = build_ignore_matcher(&patterns).unwrap();
         let exclusions = vec![&excluded_dir as &PathBuf];
         let archive_path = test_dir.join("test.tar.gz");
+        let metadata = fs::metadata(&test_dir).unwrap();
         
         create_archive(
             &test_dir,
+            &metadata,
             &archive_path,
             &None,
             &exclusions,
@@ -837,10 +861,12 @@ mod tests {
         fs::create_dir(&empty_dir).unwrap();
         
         let archive_path = test_dir.join("empty.tar.gz");
+        let metadata = fs::metadata(&empty_dir).unwrap();
         
         // Should succeed even with empty directory
         create_archive(
             &empty_dir,
+            &metadata,
             &archive_path,
             &None,
             &[],
@@ -864,6 +890,68 @@ mod tests {
     }
 
     #[test]
+    fn test_create_archive_with_single_file() {
+        let test_name = "single_file";
+        let test_dir = setup_test_dir(test_name);
+        
+        // Create a single file (not a directory)
+        let test_file = test_dir.join("backup.bak");
+        let file_content = b"test file content for backup";
+        fs::write(&test_file, file_content).unwrap();
+        
+        let archive_path = test_dir.join("backup.tar.gz");
+        let metadata = fs::metadata(&test_file).unwrap();
+        
+        // Should succeed with a single file
+        create_archive(
+            &test_file,
+            &metadata,
+            &archive_path,
+            &None,
+            &[],
+            None,
+            Some(6),
+            None,
+            None,
+        ).unwrap();
+        
+        // Archive should exist and be valid
+        assert!(archive_path.exists(), "Archive should be created for single file");
+        
+        // Extract and verify contents
+        let entries = extract_archive_contents(&archive_path);
+        
+        // Should contain the path file (.seg_arc.path)
+        assert!(entries.iter().any(|e| e.contains(".seg_arc.path")), 
+            "Archive should contain path file");
+        
+        // Should contain the file itself (just the filename, not full path)
+        assert!(entries.iter().any(|e| e == "backup.bak"), 
+            "Archive should contain the file with just its filename");
+        
+        // Verify the file content by extracting
+        let file = fs::File::open(&archive_path).unwrap();
+        let decoder = GzDecoder::new(file);
+        let mut archive = Archive::new(decoder);
+        
+        let mut found_file = false;
+        for entry in archive.entries().unwrap() {
+            let mut entry = entry.unwrap();
+            let path = entry.path().unwrap();
+            if path.to_string_lossy() == "backup.bak" {
+                found_file = true;
+                let mut content = Vec::new();
+                entry.read_to_end(&mut content).unwrap();
+                assert_eq!(content, file_content, "File content should match");
+                break;
+            }
+        }
+        assert!(found_file, "Should find the file in the archive");
+        
+        cleanup_test_dir(test_name);
+    }
+
+    #[test]
     fn test_create_archive_compression_level_validation() {
         let test_name = "compression_validation";
         let test_dir = setup_test_dir(test_name);
@@ -872,10 +960,13 @@ mod tests {
         fs::write(test_dir.join("file.txt"), b"test content").unwrap();
         let archive_path = test_dir.join("test.tar.gz");
         
+        let metadata = fs::metadata(&test_dir).unwrap();
+        
         // Test valid compression levels (0-9)
         for level in 0..=9 {
             let result = create_archive(
                 &test_dir,
+                &metadata,
                 &archive_path,
                 &None,
                 &[],
@@ -890,6 +981,7 @@ mod tests {
         // Test invalid compression level (> 9)
         let result = create_archive(
             &test_dir,
+            &metadata,
             &archive_path,
             &None,
             &[],
@@ -906,6 +998,7 @@ mod tests {
         // Test very large compression level
         let result = create_archive(
             &test_dir,
+            &metadata,
             &archive_path,
             &None,
             &[],
@@ -947,10 +1040,12 @@ mod tests {
         fs::create_dir(&empty_deep_dir).unwrap();
         
         let archive_path = test_dir.join("test.tar.gz");
+        let metadata = fs::metadata(&test_dir).unwrap();
         
         // Create archive - this should succeed with long paths
         let result = create_archive(
             &test_dir,
+            &metadata,
             &archive_path,
             &None,
             &[],
@@ -1011,11 +1106,13 @@ mod tests {
         fs::write(long_path.join("file.txt"), b"test content").unwrap();
         
         let archive_path = test_dir.join("test.tar.gz");
+        let metadata = fs::metadata(&base_dir).unwrap();
         
         // Create archive with root_path set (this tests path stripping with long paths)
         let root_path = Some(base_dir.clone());
         let result = create_archive(
             &base_dir,
+            &metadata,
             &archive_path,
             &root_path,
             &[],

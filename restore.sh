@@ -66,14 +66,28 @@ extract_tars() {
             exit -1
         fi
         
-        # Move the files to the destination path
+        # Determine if this is a "file" or "directory" segment
+        # File segments contain 1 file (besides the path file) and its name matches the path file's content
         local dest_path="$dest_root/$(cat "$temp_folder/$PATH_FILE")"
-        echo "  Restoring to $dest_path"
-        mkdir -p "$dest_path"
-        rsync -av --remove-source-files "$temp_folder/" "$dest_path/"
+        local files_in_archive=$(find "$temp_folder" -type f ! -name "$PATH_FILE" | wc -l)
+        local path_filename=$(basename "$dest_path")
+        
+        if [ "$files_in_archive" -eq 1 ] && [ -f "$temp_folder/$path_filename" ]; then
+            # File segment: restore the single file
+            local dest_dir=$(dirname "$dest_path")
+            echo "  Restoring file: $dest_path"
+            mkdir -p "$dest_dir"
+            rsync -av --remove-source-files "$temp_folder/$path_filename" "$dest_path"
+            rm "$temp_folder/$PATH_FILE" # Not in the rsync call, unlike a directory segment
 
-        rm "$dest_path/$PATH_FILE"
-        echo "  Removed path file: $dest_path$PATH_FILE"
+        else
+            # Directory segment: restore the directory structure
+            echo "  Restoring directory: $dest_path"
+            mkdir -p "$dest_path"
+            rsync -av --remove-source-files "$temp_folder/" "$dest_path/"
+            rm "$dest_path/$PATH_FILE"
+            echo "  Removed path file: $dest_path/$PATH_FILE"
+        fi
 
         rm -Rf "$temp_folder"
         echo "  Removed temp folder: $temp_folder"

@@ -40,7 +40,7 @@ All fields (unless otherwise noted) are optional strings.
 - **`log_file`**: Path to generate logs. `%D` is replaced with a date-stamp _(Default: No log)_.
 - **`compression_level`**: Level of GZip compression to use _(`0 - 9 uint`, Default: `6`)_.
 - **`max_size_bytes`**: Maximum file size before a split, in bytes _(`uint`, Default: No splitting)_.
-- **`segments`**: List of archive names (keys) and file-paths (values) to archive _(`section of key/value pairs`, Required)_.
+- **`segments`**: List of archive names (keys) and directory or file paths (values) to archive _(`section of key/value pairs`, Required)_.
 
 ---
 

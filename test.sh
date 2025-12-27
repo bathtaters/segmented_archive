@@ -104,6 +104,7 @@ echo "test_base = \"$TEST_DIR/files\"" >> "$TEST_CFG"
 echo "large_file = \"$TEST_DIR/files/test_dir_1/\"" >> "$TEST_CFG"
 echo "nested_dir = \"$TEST_DIR/files/test_dir_2/nest_a/nest_b/\"" >> "$TEST_CFG"
 echo "symlinks = \"$TEST_DIR/files/test_dir_3/\"" >> "$TEST_CFG"
+echo "solo_file = \"$TEST_DIR/files/test_file_50.txt\"" >> "$TEST_CFG"
 
 echo
 echo " --- TEST CONFIG: $TEST_CFG --- "
@@ -158,12 +159,13 @@ echo "(You should see: 'No such file or directory' error for broken_symlink, 'te
 
 echo
 echo " --- SKIPS UNCHANGED SEGMENTS --- "
-echo "x" >> "$TEST_DIR/files/test_file_1.txt"
+echo "FILE 1 CHANGE" >> "$TEST_DIR/files/test_file_1.txt"
+echo "FILE 50 CHANGE" >> "$TEST_DIR/files/test_file_50.txt"
 rm -Rf "$TEST_DIR/archives"
 rm -f "$TEST_DIR/skip_log.txt"
 cargo run "$TEST_CFG"
 ls -l "$TEST_DIR/archives"
-echo "(You should only see test_base.tar.gz above)"
+echo "(You should only see test_base and solo_file above)"
 
 echo
 echo " --- TESTING SKIP SCRIPT --- "
