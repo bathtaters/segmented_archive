@@ -103,53 +103,7 @@ fn append_dir_contents(
     exclusions: &[&PathBuf],
     ignore_patterns: Option<&GlobSet>,
 ) -> Result<()> {
-
-    let base_iter = WalkDir::new(current_dir).follow_links(false).into_iter();
-    
-    let iter: Box<dyn Iterator<Item = Result<walkdir::DirEntry, walkdir::Error>>> = 
-        if !exclusions.is_empty() || ignore_patterns.is_some() {
-            // Filter before traversal to skip ignored/excluded directories
-            Box::new(base_iter.filter_entry(move |entry| {
-                let path = entry.path();
-                
-                if is_excluded(path, exclusions) {
-                    return false;
-                }
-                
-                if let Some(patterns) = ignore_patterns {
-                    if patterns.is_match(path) {
-                        return false;
-                    }
-                }
-                
-                true
-            }))
-        } else {
-            // No filtering, use basic iterator
-            Box::new(base_iter)
-        };
-    
-    // Collect all entries
-    let entries: Vec<walkdir::DirEntry> = iter
-        .filter_map(|entry| {
-            match entry {
-                Ok(e) => {
-                    let path = e.path();
-                    // Skip excluded/ignored files (filter_entry only filters directories)
-                    if is_excluded(path, exclusions) {
-                        return None;
-                    }
-                    if let Some(patterns) = ignore_patterns {
-                        if patterns.is_match(path) {
-                            return None;
-                        }
-                    }
-                    Some(e)
-                }
-                Err(_) => None,
-            }
-        })
-        .collect();
+    let entries = collect_filtered_entries(current_dir, exclusions, ignore_patterns);
     
     // Track for determining empty directories
     let mut all_dirs: HashSet<PathBuf> = HashSet::new();
@@ -309,6 +263,63 @@ pub fn is_excluded(path: &Path, exclusions: &[&PathBuf]) -> bool {
     exclusions.iter().any(|&exclude_path| path.starts_with(exclude_path))
 }
 
+/// Collect filtered directory entries, applying exclusions and ignore patterns
+/// Returns all entries (files, directories, symlinks) that should be processed
+pub fn collect_filtered_entries(
+    base_dir: &Path,
+    exclusions: &[&PathBuf],
+    ignore_patterns: Option<&GlobSet>,
+) -> Vec<walkdir::DirEntry> {
+    let base_iter = WalkDir::new(base_dir).follow_links(false).into_iter();
+    
+    // Collect entries first to avoid lifetime issues with the iterator
+    let entries: Vec<_> = if !exclusions.is_empty() || ignore_patterns.is_some() {
+        // Filter ignored/excluded entries before traversal
+        base_iter
+            .filter_entry(move |entry| {
+                let path = entry.path();
+                
+                if is_excluded(path, exclusions) {
+                    return false;
+                }
+                
+                if let Some(patterns) = ignore_patterns {
+                    if patterns.is_match(path) {
+                        return false;
+                    }
+                }
+                
+                true
+            })
+            .collect()
+    } else {
+        // No filtering, use basic iterator
+        base_iter.collect()
+    };
+    
+    entries
+        .into_iter()
+        .filter_map(|entry| {
+            match entry {
+                Ok(e) => {
+                    let path = e.path();
+                    // Skip excluded/ignored files (filter_entry handles directories)
+                    if is_excluded(path, exclusions) {
+                        return None;
+                    }
+                    if let Some(patterns) = ignore_patterns {
+                        if patterns.is_match(path) {
+                            return None;
+                        }
+                    }
+                    Some(e)
+                }
+                Err(_) => None,
+            }
+        })
+        .collect()
+}
+
 /// --- Tests --- ///
 
 #[cfg(test)]
@@ -345,6 +356,227 @@ mod tests {
         let exclusions2 = vec![&path1 as &PathBuf];
         assert!(is_excluded(&path2, &exclusions2)); // path2 is under path1
         assert!(is_excluded(&path1, &exclusions2)); // path1 starts with itself (equal paths)
+    }
+
+    #[test]
+    fn test_collect_filtered_entries_exclusions() {
+        let test_name = "collect_exclusions";
+        let test_dir = setup_test_dir(test_name);
+        
+        // Create files in main directory
+        fs::write(test_dir.join("file1.txt"), b"content1").unwrap();
+        fs::write(test_dir.join("file2.txt"), b"content2").unwrap();
+        
+        // Create excluded subdirectory
+        let excluded_dir = test_dir.join("excluded");
+        fs::create_dir(&excluded_dir).unwrap();
+        fs::write(excluded_dir.join("file3.txt"), b"content3").unwrap();
+        
+        // Collect entries without exclusions
+        let entries_no_excl = collect_filtered_entries(&test_dir, &[], None);
+        let paths_no_excl: Vec<PathBuf> = entries_no_excl.iter()
+            .map(|e| e.path().to_path_buf())
+            .collect();
+        
+        // Should include all files
+        assert!(paths_no_excl.iter().any(|p| p.ends_with("file1.txt")));
+        assert!(paths_no_excl.iter().any(|p| p.ends_with("file2.txt")));
+        assert!(paths_no_excl.iter().any(|p| p.ends_with("file3.txt")));
+        
+        // Collect entries with exclusions
+        let exclusions = vec![&excluded_dir as &PathBuf];
+        let entries_with_excl = collect_filtered_entries(&test_dir, &exclusions, None);
+        let paths_with_excl: Vec<PathBuf> = entries_with_excl.iter()
+            .map(|e| e.path().to_path_buf())
+            .collect();
+        
+        // Should exclude the excluded directory and its contents
+        assert!(paths_with_excl.iter().any(|p| p.ends_with("file1.txt")));
+        assert!(paths_with_excl.iter().any(|p| p.ends_with("file2.txt")));
+        assert!(!paths_with_excl.iter().any(|p| p.ends_with("file3.txt")));
+        assert!(!paths_with_excl.iter().any(|p| p == &excluded_dir));
+        
+        cleanup_test_dir(test_name);
+    }
+
+    #[test]
+    fn test_collect_filtered_entries_ignore_patterns_extension() {
+        let test_name = "collect_ignore_ext";
+        let test_dir = setup_test_dir(test_name);
+        
+        // Create files
+        fs::write(test_dir.join("file1.txt"), b"content1").unwrap();
+        fs::write(test_dir.join("file2.txt"), b"content2").unwrap();
+        fs::write(test_dir.join("file3.tmp"), b"content3").unwrap();
+        fs::write(test_dir.join("file4.tmp"), b"content4").unwrap();
+        
+        // Build ignore matcher for .tmp files
+        use globset::GlobSetBuilder;
+        let mut builder = GlobSetBuilder::new();
+        builder.add(globset::Glob::new("*.tmp").unwrap());
+        let ignore_matcher = Some(builder.build().unwrap());
+        
+        // Collect entries with ignore pattern
+        let entries = collect_filtered_entries(&test_dir, &[], ignore_matcher.as_ref());
+        let paths: Vec<PathBuf> = entries.iter()
+            .map(|e| e.path().to_path_buf())
+            .collect();
+        
+        // Should include .txt files but not .tmp files
+        assert!(paths.iter().any(|p| p.ends_with("file1.txt")));
+        assert!(paths.iter().any(|p| p.ends_with("file2.txt")));
+        assert!(!paths.iter().any(|p| p.ends_with("file3.tmp")));
+        assert!(!paths.iter().any(|p| p.ends_with("file4.tmp")));
+        
+        cleanup_test_dir(test_name);
+    }
+
+    #[test]
+    fn test_collect_filtered_entries_ignore_patterns_directory() {
+        let test_name = "collect_ignore_dir";
+        let test_dir = setup_test_dir(test_name);
+        
+        // Create files
+        fs::write(test_dir.join("file1.txt"), b"content1").unwrap();
+        fs::write(test_dir.join("file2.txt"), b"content2").unwrap();
+        
+        // Add node_modules directory (should be ignored)
+        let node_modules = test_dir.join("node_modules");
+        fs::create_dir(&node_modules).unwrap();
+        fs::write(node_modules.join("package.json"), b"{}").unwrap();
+        fs::write(node_modules.join("index.js"), b"console.log('test');").unwrap();
+        
+        // Build ignore matcher for node_modules
+        use globset::GlobSetBuilder;
+        let mut builder = GlobSetBuilder::new();
+        builder.add(globset::Glob::new("**/node_modules").unwrap());
+        let ignore_matcher = Some(builder.build().unwrap());
+        
+        // Collect entries with ignore pattern
+        let entries = collect_filtered_entries(&test_dir, &[], ignore_matcher.as_ref());
+        let paths: Vec<PathBuf> = entries.iter()
+            .map(|e| e.path().to_path_buf())
+            .collect();
+        
+        // Should include .txt files but not node_modules
+        assert!(paths.iter().any(|p| p.ends_with("file1.txt")));
+        assert!(paths.iter().any(|p| p.ends_with("file2.txt")));
+        assert!(!paths.iter().any(|p| p.ends_with("package.json")));
+        assert!(!paths.iter().any(|p| p.ends_with("index.js")));
+        assert!(!paths.iter().any(|p| p == &node_modules));
+        
+        cleanup_test_dir(test_name);
+    }
+
+    #[test]
+    fn test_collect_filtered_entries_ignore_patterns_recursive() {
+        let test_name = "collect_ignore_recursive";
+        let test_dir = setup_test_dir(test_name);
+        
+        // Create files
+        fs::write(test_dir.join("file1.txt"), b"content1").unwrap();
+        fs::write(test_dir.join("file2.txt"), b"content2").unwrap();
+        
+        // Add node_modules at different nesting levels
+        let subdir1 = test_dir.join("subdir1");
+        fs::create_dir_all(&subdir1).unwrap();
+        let node_modules1 = subdir1.join("node_modules");
+        fs::create_dir_all(&node_modules1).unwrap();
+        fs::write(node_modules1.join("package.json"), b"{}").unwrap();
+        
+        let subdir2 = test_dir.join("subdir2");
+        fs::create_dir_all(&subdir2).unwrap();
+        let deep = subdir2.join("deep");
+        fs::create_dir_all(&deep).unwrap();
+        let node_modules2 = deep.join("node_modules");
+        fs::create_dir_all(&node_modules2).unwrap();
+        fs::write(node_modules2.join("package.json"), b"{}").unwrap();
+        
+        // Build ignore matcher for recursive node_modules
+        use globset::GlobSetBuilder;
+        let mut builder = GlobSetBuilder::new();
+        builder.add(globset::Glob::new("**/node_modules").unwrap());
+        let ignore_matcher = Some(builder.build().unwrap());
+        
+        // Collect entries with ignore pattern
+        let entries = collect_filtered_entries(&test_dir, &[], ignore_matcher.as_ref());
+        let paths: Vec<PathBuf> = entries.iter()
+            .map(|e| e.path().to_path_buf())
+            .collect();
+        
+        // Should include .txt files but not any node_modules
+        assert!(paths.iter().any(|p| p.ends_with("file1.txt")));
+        assert!(paths.iter().any(|p| p.ends_with("file2.txt")));
+        assert!(!paths.iter().any(|p| p.ends_with("package.json")));
+        assert!(!paths.iter().any(|p| p == &node_modules1));
+        assert!(!paths.iter().any(|p| p == &node_modules2));
+        
+        cleanup_test_dir(test_name);
+    }
+
+    #[test]
+    fn test_collect_filtered_entries_ignore_patterns_and_exclusions() {
+        let test_name = "collect_ignore_and_excl";
+        let test_dir = setup_test_dir(test_name);
+        
+        // Create files
+        fs::write(test_dir.join("file1.txt"), b"content1").unwrap();
+        
+        // Add excluded directory
+        let excluded_dir = test_dir.join("excluded");
+        fs::create_dir(&excluded_dir).unwrap();
+        fs::write(excluded_dir.join("file2.txt"), b"content2").unwrap();
+        
+        // Add ignored files
+        fs::write(test_dir.join("file3.tmp"), b"content3").unwrap();
+        
+        // Build ignore matcher for .tmp files
+        use globset::GlobSetBuilder;
+        let mut builder = GlobSetBuilder::new();
+        builder.add(globset::Glob::new("*.tmp").unwrap());
+        let ignore_matcher = Some(builder.build().unwrap());
+        let exclusions = vec![&excluded_dir as &PathBuf];
+        
+        // Collect entries with both exclusions and ignore patterns
+        let entries = collect_filtered_entries(&test_dir, &exclusions, ignore_matcher.as_ref());
+        let paths: Vec<PathBuf> = entries.iter()
+            .map(|e| e.path().to_path_buf())
+            .collect();
+        
+        // Should only include file1.txt (excluded dir and .tmp files are skipped)
+        assert!(paths.iter().any(|p| p.ends_with("file1.txt")));
+        assert!(!paths.iter().any(|p| p.ends_with("file2.txt")));
+        assert!(!paths.iter().any(|p| p.ends_with("file3.tmp")));
+        assert!(!paths.iter().any(|p| p == &excluded_dir));
+        
+        cleanup_test_dir(test_name);
+    }
+
+    #[test]
+    fn test_collect_filtered_entries_no_filtering() {
+        let test_name = "collect_no_filter";
+        let test_dir = setup_test_dir(test_name);
+        
+        // Create files and directories
+        fs::write(test_dir.join("file1.txt"), b"content1").unwrap();
+        fs::write(test_dir.join("file2.txt"), b"content2").unwrap();
+        let subdir = test_dir.join("subdir");
+        fs::create_dir(&subdir).unwrap();
+        fs::write(subdir.join("file3.txt"), b"content3").unwrap();
+        
+        // Collect entries without any filtering
+        let entries = collect_filtered_entries(&test_dir, &[], None);
+        let paths: Vec<PathBuf> = entries.iter()
+            .map(|e| e.path().to_path_buf())
+            .collect();
+        
+        // Should include all files and directories
+        assert!(paths.iter().any(|p| p.ends_with("file1.txt")));
+        assert!(paths.iter().any(|p| p.ends_with("file2.txt")));
+        assert!(paths.iter().any(|p| p.ends_with("file3.txt")));
+        assert!(paths.iter().any(|p| p == &subdir));
+        
+        cleanup_test_dir(test_name);
     }
 
     #[test]
@@ -483,225 +715,6 @@ mod tests {
         }
         entries.sort();
         entries
-    }
-
-    #[test]
-    fn test_create_archive_with_ignore_patterns_extension() {
-        let test_name = "ignore_extensions";
-        let test_dir = setup_test_dir(test_name);
-        
-        // Create test files
-        fs::write(test_dir.join("file1.txt"), b"content1").unwrap();
-        fs::write(test_dir.join("file2.tmp"), b"content2").unwrap();
-        fs::write(test_dir.join("file3.txt"), b"content3").unwrap();
-        fs::write(test_dir.join("file4.tmp"), b"content4").unwrap();
-        
-        // Create archive with ignore pattern for .tmp files
-        let patterns = vec!["*.tmp".to_string()];
-        let ignore_matcher = build_ignore_matcher(&patterns).unwrap();
-        let archive_path = test_dir.join("test.tar.gz");
-        let metadata = fs::metadata(&test_dir).unwrap();
-        
-        create_archive(
-            &test_dir,
-            &metadata,
-            &archive_path,
-            &None,
-            &[],
-            ignore_matcher.as_ref(),
-            Some(6),
-            None,
-            None,
-        ).unwrap();
-        
-        // Extract and verify contents
-        let entries = extract_archive_contents(&archive_path);
-        
-        // Should contain .txt files but not .tmp files
-        assert!(entries.iter().any(|e| e.contains("file1.txt")));
-        assert!(entries.iter().any(|e| e.contains("file3.txt")));
-        assert!(!entries.iter().any(|e| e.contains("file2.tmp")));
-        assert!(!entries.iter().any(|e| e.contains("file4.tmp")));
-        
-        cleanup_test_dir(test_name);
-    }
-
-    #[test]
-    fn test_create_archive_with_ignore_patterns_directory() {
-        let test_name = "ignore_directory";
-        let test_dir = setup_test_dir(test_name);
-        
-        // Create test structure
-        fs::write(test_dir.join("file1.txt"), b"content1").unwrap();
-        let node_modules = test_dir.join("node_modules");
-        fs::create_dir(&node_modules).unwrap();
-        fs::write(node_modules.join("package.json"), b"{}").unwrap();
-        fs::write(test_dir.join("file2.txt"), b"content2").unwrap();
-        
-        // Create archive with ignore pattern for node_modules
-        let patterns = vec!["**/node_modules".to_string()];
-        let ignore_matcher = build_ignore_matcher(&patterns).unwrap();
-        let archive_path = test_dir.join("test.tar.gz");
-        let metadata = fs::metadata(&test_dir).unwrap();
-        
-        create_archive(
-            &test_dir,
-            &metadata,
-            &archive_path,
-            &None,
-            &[],
-            ignore_matcher.as_ref(),
-            Some(6),
-            None,
-            None,
-        ).unwrap();
-        
-        // Extract and verify contents
-        let entries = extract_archive_contents(&archive_path);
-        
-        // Should contain .txt files but not node_modules
-        assert!(entries.iter().any(|e| e.contains("file1.txt")));
-        assert!(entries.iter().any(|e| e.contains("file2.txt")));
-        assert!(!entries.iter().any(|e| e.contains("node_modules")));
-        
-        cleanup_test_dir(test_name);
-    }
-
-    #[test]
-    fn test_create_archive_with_ignore_patterns_hidden_file() {
-        let test_name = "ignore_hidden";
-        let test_dir = setup_test_dir(test_name);
-        
-        // Create test files including .DS_Store
-        fs::write(test_dir.join("file1.txt"), b"content1").unwrap();
-        fs::write(test_dir.join(".DS_Store"), b"metadata").unwrap();
-        fs::write(test_dir.join("file2.txt"), b"content2").unwrap();
-        
-        // Create archive with ignore pattern for .DS_Store
-        let patterns = vec!["**/.DS_Store".to_string()];
-        let ignore_matcher = build_ignore_matcher(&patterns).unwrap();
-        let archive_path = test_dir.join("test.tar.gz");
-        let metadata = fs::metadata(&test_dir).unwrap();
-        
-        create_archive(
-            &test_dir,
-            &metadata,
-            &archive_path,
-            &None,
-            &[],
-            ignore_matcher.as_ref(),
-            Some(6),
-            None,
-            None,
-        ).unwrap();
-        
-        // Extract and verify contents
-        let entries = extract_archive_contents(&archive_path);
-        
-        // Should contain .txt files but not .DS_Store
-        assert!(entries.iter().any(|e| e.contains("file1.txt")));
-        assert!(entries.iter().any(|e| e.contains("file2.txt")));
-        assert!(!entries.iter().any(|e| e.contains(".DS_Store")));
-        
-        cleanup_test_dir(test_name);
-    }
-
-    #[test]
-    fn test_create_archive_with_ignore_patterns_recursive() {
-        let test_name = "ignore_recursive";
-        let test_dir = setup_test_dir(test_name);
-        
-        // Create nested structure with node_modules at different levels
-        fs::write(test_dir.join("file1.txt"), b"content1").unwrap();
-        let subdir1 = test_dir.join("subdir1");
-        fs::create_dir_all(&subdir1).unwrap();
-        let node_modules1 = subdir1.join("node_modules");
-        fs::create_dir_all(&node_modules1).unwrap();
-        fs::write(node_modules1.join("package.json"), b"{}").unwrap();
-        
-        let subdir2 = test_dir.join("subdir2");
-        fs::create_dir_all(&subdir2).unwrap();
-        let deep = subdir2.join("deep");
-        fs::create_dir_all(&deep).unwrap();
-        let node_modules2 = deep.join("node_modules");
-        fs::create_dir_all(&node_modules2).unwrap();
-        fs::write(node_modules2.join("package.json"), b"{}").unwrap();
-        fs::write(subdir2.join("file2.txt"), b"content2").unwrap();
-        
-        // Create archive with recursive ignore pattern for node_modules
-        let patterns = vec!["**/node_modules".to_string()];
-        let ignore_matcher = build_ignore_matcher(&patterns).unwrap();
-        let archive_path = test_dir.join("test.tar.gz");
-        let metadata = fs::metadata(&test_dir).unwrap();
-        
-        create_archive(
-            &test_dir,
-            &metadata,
-            &archive_path,
-            &None,
-            &[],
-            ignore_matcher.as_ref(),
-            Some(6),
-            None,
-            None,
-        ).unwrap();
-        
-        // Extract and verify contents
-        let entries = extract_archive_contents(&archive_path);
-        
-        // Should contain .txt files but not any node_modules
-        assert!(entries.iter().any(|e| e.contains("file1.txt")));
-        assert!(entries.iter().any(|e| e.contains("file2.txt")));
-        assert!(!entries.iter().any(|e| e.contains("node_modules")));
-        
-        cleanup_test_dir(test_name);
-    }
-
-    #[test]
-    fn test_create_archive_with_ignore_patterns_multiple() {
-        let test_name = "ignore_multiple";
-        let test_dir = setup_test_dir(test_name);
-        
-        // Create test files
-        fs::write(test_dir.join("file1.txt"), b"content1").unwrap();
-        fs::write(test_dir.join("file2.tmp"), b"content2").unwrap();
-        fs::write(test_dir.join(".DS_Store"), b"metadata").unwrap();
-        let node_modules = test_dir.join("node_modules");
-        fs::create_dir(&node_modules).unwrap();
-        fs::write(node_modules.join("package.json"), b"{}").unwrap();
-        
-        // Create archive with multiple ignore patterns
-        let patterns = vec![
-            "*.tmp".to_string(),
-            "**/.DS_Store".to_string(),
-            "**/node_modules".to_string(),
-        ];
-        let ignore_matcher = build_ignore_matcher(&patterns).unwrap();
-        let archive_path = test_dir.join("test.tar.gz");
-        let metadata = fs::metadata(&test_dir).unwrap();
-        
-        create_archive(
-            &test_dir,
-            &metadata,
-            &archive_path,
-            &None,
-            &[],
-            ignore_matcher.as_ref(),
-            Some(6),
-            None,
-            None,
-        ).unwrap();
-        
-        // Extract and verify contents
-        let entries = extract_archive_contents(&archive_path);
-        
-        // Should only contain file1.txt
-        assert!(entries.iter().any(|e| e.contains("file1.txt")));
-        assert!(!entries.iter().any(|e| e.contains("file2.tmp")));
-        assert!(!entries.iter().any(|e| e.contains(".DS_Store")));
-        assert!(!entries.iter().any(|e| e.contains("node_modules")));
-        
-        cleanup_test_dir(test_name);
     }
 
     #[test]

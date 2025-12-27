@@ -6,9 +6,8 @@ use std::io::{BufReader, BufRead, Write, Read};
 use std::fs;
 use log::{warn};
 use globset::GlobSet;
-use walkdir::WalkDir;
 use rayon::prelude::*;
-use crate::helpers::is_excluded;
+use crate::helpers::collect_filtered_entries;
 
 // Buffer size for reading files during hashing (256KB)
 const HASHER_BUFFER_SIZE: usize = 262144;
@@ -50,39 +49,12 @@ fn hash_dir_contents(
     exclusions: &[&PathBuf],
     ignore_patterns: Option<&GlobSet>,
 ) -> Result<(u64, usize)> {
-    // Collect all file paths using walkdir
-    let base_iter = WalkDir::new(base_dir).follow_links(false).into_iter();
+    let entries = collect_filtered_entries(base_dir, exclusions, ignore_patterns);
     
-    let iter: Box<dyn Iterator<Item = Result<walkdir::DirEntry, walkdir::Error>>> = 
-        if !exclusions.is_empty() || ignore_patterns.is_some() {
-            // Filter before traversal to skip ignored/excluded directories
-            Box::new(base_iter.filter_entry(move |entry| {
-                let path = entry.path();
-
-
-                if is_excluded(path, exclusions) {
-                    return false;
-                }
-
-                if let Some(patterns) = ignore_patterns {
-                    if patterns.is_match(path) {
-                        return false;
-                    }
-                }
-                
-                true
-            }))
-        } else {
-            // No filtering, use basic iterator
-            Box::new(base_iter)
-        };
-    
-    let file_paths: Vec<(PathBuf, PathBuf)> = iter
+    // Filter to only files and symlinks, extract paths
+    let file_paths: Vec<(PathBuf, PathBuf)> = entries
+        .into_iter()
         .filter_map(|entry| {
-            let entry = match entry {
-                Ok(e) => e,
-                Err(_) => return None,
-            };
             let path = entry.path().to_path_buf();
             let file_type = entry.file_type();
 
@@ -400,223 +372,6 @@ mod tests {
         cleanup_test_dir(test_name);
     }
 
-    #[test]
-    fn test_hash_exclusions() {
-        let test_name = "exclusions";
-        let test_dir = setup_test_dir(test_name);
-        
-        // Create files in main directory
-        fs::write(test_dir.join("file1.txt"), b"content1").unwrap();
-        fs::write(test_dir.join("file2.txt"), b"content2").unwrap();
-        let metadata1 = fs::metadata(&test_dir).unwrap();
-        let hash1 = compute_segment_hash(&test_dir, &metadata1, &[], None).unwrap();
-        
-        // Create excluded subdirectory
-        let excluded_dir = test_dir.join("excluded");
-        fs::create_dir(&excluded_dir).unwrap();
-        fs::write(excluded_dir.join("file3.txt"), b"content3").unwrap();
-        
-        // Hash should be the same (excluded files not included)
-        let exclusions = vec![&excluded_dir as &PathBuf];
-        let metadata2 = fs::metadata(&test_dir).unwrap();
-        let hash2 = compute_segment_hash(&test_dir, &metadata2, &exclusions, None).unwrap();
-        assert_eq!(hash1, hash2, "Hash should be same when excluded files are added");
-        
-        cleanup_test_dir(test_name);
-    }
-
-    #[test]
-    fn test_hash_ignore_patterns_extension() {
-        let test_name = "ignore_extensions";
-        let test_dir = setup_test_dir(test_name);
-        
-        // Create files in main directory
-        fs::write(test_dir.join("file1.txt"), b"content1").unwrap();
-        fs::write(test_dir.join("file2.txt"), b"content2").unwrap();
-        let metadata1 = fs::metadata(&test_dir).unwrap();
-        let hash1 = compute_segment_hash(&test_dir, &metadata1, &[], None).unwrap();
-        
-        // Add .tmp files (should be ignored)
-        fs::write(test_dir.join("file3.tmp"), b"content3").unwrap();
-        fs::write(test_dir.join("file4.tmp"), b"content4").unwrap();
-        
-        // Build ignore matcher for .tmp files
-        use globset::GlobSetBuilder;
-        let mut builder = GlobSetBuilder::new();
-        builder.add(globset::Glob::new("*.tmp").unwrap());
-        let ignore_matcher = Some(builder.build().unwrap());
-        
-        // Hash should be the same (ignored files not included)
-        let metadata2 = fs::metadata(&test_dir).unwrap();
-        let hash2 = compute_segment_hash(&test_dir, &metadata2, &[], ignore_matcher.as_ref()).unwrap();
-        assert_eq!(hash1, hash2, "Hash should be same when ignored .tmp files are added");
-        
-        cleanup_test_dir(test_name);
-    }
-
-    #[test]
-    fn test_hash_ignore_patterns_directory() {
-        let test_name = "ignore_directory";
-        let test_dir = setup_test_dir(test_name);
-        
-        // Create files in main directory
-        fs::write(test_dir.join("file1.txt"), b"content1").unwrap();
-        fs::write(test_dir.join("file2.txt"), b"content2").unwrap();
-        let metadata1 = fs::metadata(&test_dir).unwrap();
-        let hash1 = compute_segment_hash(&test_dir, &metadata1, &[], None).unwrap();
-        
-        // Add node_modules directory (should be ignored)
-        let node_modules = test_dir.join("node_modules");
-        fs::create_dir(&node_modules).unwrap();
-        fs::write(node_modules.join("package.json"), b"{}").unwrap();
-        fs::write(node_modules.join("index.js"), b"console.log('test');").unwrap();
-        
-        // Build ignore matcher for node_modules
-        use globset::GlobSetBuilder;
-        let mut builder = GlobSetBuilder::new();
-        builder.add(globset::Glob::new("**/node_modules").unwrap());
-        let ignore_matcher = Some(builder.build().unwrap());
-        
-        // Hash should be the same (ignored directory not included)
-        let metadata2 = fs::metadata(&test_dir).unwrap();
-        let hash2 = compute_segment_hash(&test_dir, &metadata2, &[], ignore_matcher.as_ref()).unwrap();
-        assert_eq!(hash1, hash2, "Hash should be same when ignored node_modules is added");
-        
-        cleanup_test_dir(test_name);
-    }
-
-    #[test]
-    fn test_hash_ignore_patterns_hidden_file() {
-        let test_name = "ignore_hidden";
-        let test_dir = setup_test_dir(test_name);
-        
-        // Create files in main directory
-        fs::write(test_dir.join("file1.txt"), b"content1").unwrap();
-        fs::write(test_dir.join("file2.txt"), b"content2").unwrap();
-        let metadata1 = fs::metadata(&test_dir).unwrap();
-        let hash1 = compute_segment_hash(&test_dir, &metadata1, &[], None).unwrap();
-        
-        // Add .DS_Store file (should be ignored)
-        fs::write(test_dir.join(".DS_Store"), b"metadata").unwrap();
-        
-        // Build ignore matcher for .DS_Store
-        use globset::GlobSetBuilder;
-        let mut builder = GlobSetBuilder::new();
-        builder.add(globset::Glob::new("**/.DS_Store").unwrap());
-        let ignore_matcher = Some(builder.build().unwrap());
-        
-        // Hash should be the same (ignored file not included)
-        let metadata2 = fs::metadata(&test_dir).unwrap();
-        let hash2 = compute_segment_hash(&test_dir, &metadata2, &[], ignore_matcher.as_ref()).unwrap();
-        assert_eq!(hash1, hash2, "Hash should be same when ignored .DS_Store is added");
-        
-        cleanup_test_dir(test_name);
-    }
-
-    #[test]
-    fn test_hash_ignore_patterns_recursive() {
-        let test_name = "ignore_recursive";
-        let test_dir = setup_test_dir(test_name);
-        
-        // Create files in main directory
-        fs::write(test_dir.join("file1.txt"), b"content1").unwrap();
-        fs::write(test_dir.join("file2.txt"), b"content2").unwrap();
-        let metadata1 = fs::metadata(&test_dir).unwrap();
-        let hash1 = compute_segment_hash(&test_dir, &metadata1, &[], None).unwrap();
-        
-        // Add node_modules at different nesting levels
-        let subdir1 = test_dir.join("subdir1");
-        fs::create_dir_all(&subdir1).unwrap();
-        let node_modules1 = subdir1.join("node_modules");
-        fs::create_dir_all(&node_modules1).unwrap();
-        fs::write(node_modules1.join("package.json"), b"{}").unwrap();
-        
-        let subdir2 = test_dir.join("subdir2");
-        fs::create_dir_all(&subdir2).unwrap();
-        let deep = subdir2.join("deep");
-        fs::create_dir_all(&deep).unwrap();
-        let node_modules2 = deep.join("node_modules");
-        fs::create_dir_all(&node_modules2).unwrap();
-        fs::write(node_modules2.join("package.json"), b"{}").unwrap();
-        
-        // Build ignore matcher for recursive node_modules
-        use globset::GlobSetBuilder;
-        let mut builder = GlobSetBuilder::new();
-        builder.add(globset::Glob::new("**/node_modules").unwrap());
-        let ignore_matcher = Some(builder.build().unwrap());
-        
-        // Hash should be the same (ignored directories not included)
-        let metadata2 = fs::metadata(&test_dir).unwrap();
-        let hash2 = compute_segment_hash(&test_dir, &metadata2, &[], ignore_matcher.as_ref()).unwrap();
-        assert_eq!(hash1, hash2, "Hash should be same when ignored recursive node_modules are added");
-        
-        cleanup_test_dir(test_name);
-    }
-
-    #[test]
-    fn test_hash_ignore_patterns_multiple() {
-        let test_name = "ignore_multiple";
-        let test_dir = setup_test_dir(test_name);
-        
-        // Create files in main directory
-        fs::write(test_dir.join("file1.txt"), b"content1").unwrap();
-        fs::write(test_dir.join("file2.txt"), b"content2").unwrap();
-        let metadata1 = fs::metadata(&test_dir).unwrap();
-        let hash1 = compute_segment_hash(&test_dir, &metadata1, &[], None).unwrap();
-        
-        // Add multiple types of files that should be ignored
-        fs::write(test_dir.join("file3.tmp"), b"content3").unwrap();
-        fs::write(test_dir.join(".DS_Store"), b"metadata").unwrap();
-        let node_modules = test_dir.join("node_modules");
-        fs::create_dir(&node_modules).unwrap();
-        fs::write(node_modules.join("package.json"), b"{}").unwrap();
-        
-        // Build ignore matcher with multiple patterns
-        use globset::GlobSetBuilder;
-        let mut builder = GlobSetBuilder::new();
-        builder.add(globset::Glob::new("*.tmp").unwrap());
-        builder.add(globset::Glob::new("**/.DS_Store").unwrap());
-        builder.add(globset::Glob::new("**/node_modules").unwrap());
-        let ignore_matcher = Some(builder.build().unwrap());
-        
-        // Hash should be the same (all ignored files/dirs not included)
-        let metadata2 = fs::metadata(&test_dir).unwrap();
-        let hash2 = compute_segment_hash(&test_dir, &metadata2, &[], ignore_matcher.as_ref()).unwrap();
-        assert_eq!(hash1, hash2, "Hash should be same when multiple ignored patterns are added");
-        
-        cleanup_test_dir(test_name);
-    }
-
-    #[test]
-    fn test_hash_ignore_patterns_and_exclusions() {
-        let test_name = "ignore_with_exclusions";
-        let test_dir = setup_test_dir(test_name);
-        
-        // Create files in main directory
-        fs::write(test_dir.join("file1.txt"), b"content1").unwrap();
-        let metadata1 = fs::metadata(&test_dir).unwrap();
-        let hash1 = compute_segment_hash(&test_dir, &metadata1, &[], None).unwrap();
-        
-        // Add both excluded directory and ignored files
-        let excluded_dir = test_dir.join("excluded");
-        fs::create_dir(&excluded_dir).unwrap();
-        fs::write(excluded_dir.join("file2.txt"), b"content2").unwrap();
-        fs::write(test_dir.join("file3.tmp"), b"content3").unwrap();
-        
-        // Build ignore matcher for .tmp files
-        use globset::GlobSetBuilder;
-        let mut builder = GlobSetBuilder::new();
-        builder.add(globset::Glob::new("*.tmp").unwrap());
-        let ignore_matcher = Some(builder.build().unwrap());
-        let exclusions = vec![&excluded_dir as &PathBuf];
-        
-        // Hash should be the same (both excluded and ignored items not included)
-        let metadata2 = fs::metadata(&test_dir).unwrap();
-        let hash2 = compute_segment_hash(&test_dir, &metadata2, &exclusions, ignore_matcher.as_ref()).unwrap();
-        assert_eq!(hash1, hash2, "Hash should be same when both exclusions and ignore patterns are used");
-        
-        cleanup_test_dir(test_name);
-    }
 
     #[test]
     fn test_hash_ignore_patterns_affects_hash_when_ignored_file_changes() {
