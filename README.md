@@ -50,12 +50,16 @@ Also included is a bash script to help restore files generated using this progra
 
 ## Usage
 
+This script uses `rsync -av` to restore the files, but additional options can be passed in.
+
 ```bash
-./restore.sh /archive/path/ /restore/path/
+./restore.sh /archive/path/ /restore/path/ [rsync_opts...]
 ```
 
 - **`/archive/path/`**: Path to a directory containing the files output by this script.
 - **`/restore/path/`**: `root_path` value from `config.toml` (Or `/` if no root path was set)
+- **`rsync_opts`**: Remaining args will be passed to the underlying `rsync` process (In addition to `-av`)
+  - _See `man rsync` for more detail_
 
 ## Advanced Options
 

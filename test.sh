@@ -146,11 +146,11 @@ cat "$first_log"
 # Restore test files
 echo
 echo " --- RESTORING ARCHIVES --- "
-"$SCRIPT_DIR/restore.sh" "$TEST_DIR/archives" "$TEST_DIR/restored"
+"$SCRIPT_DIR/restore.sh" "$TEST_DIR/archives" "$TEST_DIR/restored" --stats
+echo "(You should see rsync stats above, i.e. 'Number of files,' etc.)"
 
-# Re-run to rebuild archive files
-cargo run "$TEST_CFG"
-
+# Silently re-run to rebuild archive files
+cargo run "$TEST_CFG" 2>/dev/null
 
 echo
 echo " --- DIFF BETWEEN ORIGINAL AND RESTORED FILES --- "

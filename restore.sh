@@ -1,7 +1,7 @@
 #!/bin/bash
 # -- DESCRIPTION -- #
 # This can be used to restore a segmented backup to its original location.
-# usage: ./restore.sh /path/containing/tar/files/ /root/path/to/restore/to/
+# usage: ./restore.sh /path/containing/tar/files/ /root/path/to/restore/to/ [rsync_opts...]
 
 set -e
 shopt -s nullglob
@@ -13,13 +13,15 @@ PATH_FILE=".seg_arc.path"       # Path file used to place extracted files
 REMOVE_TAR_FILES=true           # Whether to remove tar files after extraction
 
 # Arguments
-if [ "$#" -ne 2 ]; then
-    echo "Usage: $0 /path/containing/tar/files/ /root/path/to/restore/to/" >&2
+if [ "$#" -lt 2 ]; then
+    echo "Usage: $0 /path/containing/tar/files/ /root/path/to/restore/to/ [rsync_opts...]" >&2
     exit 1
 fi
 
 TAR_PATH=$1 # Path containing the tar files
 RESTORE_PATH=$2 # Root path to restore to
+shift 2 # Remaining arguments are passed to rsync
+RSYNC_OPTS=("$@")
 
 # Combine partial files into complete files
 combine_parts() {
@@ -77,14 +79,14 @@ extract_tars() {
             local dest_dir=$(dirname "$dest_path")
             echo "  Restoring file: $dest_path"
             mkdir -p "$dest_dir"
-            rsync -av --remove-source-files "$temp_folder/$path_filename" "$dest_path"
+            rsync -av --remove-source-files "${RSYNC_OPTS[@]}" "$temp_folder/$path_filename" "$dest_path"
             rm "$temp_folder/$PATH_FILE" # Not in the rsync call, unlike a directory segment
 
         else
             # Directory segment: restore the directory structure
             echo "  Restoring directory: $dest_path"
             mkdir -p "$dest_path"
-            rsync -av --remove-source-files "$temp_folder/" "$dest_path/"
+            rsync -av --remove-source-files "${RSYNC_OPTS[@]}" "$temp_folder/" "$dest_path/"
             rm "$dest_path/$PATH_FILE"
             echo "  Removed path file: $dest_path/$PATH_FILE"
         fi
