@@ -8,8 +8,8 @@ use log::{warn};
 use globset::GlobSet;
 use crate::helpers::is_excluded;
 
-// Buffer size for reading files during hashing (8KB)
-const HASHER_BUFFER_SIZE: usize = 8192;
+// Buffer size for reading files during hashing (256KB)
+const HASHER_BUFFER_SIZE: usize = 262144;
 
 /// Computes a hash for a segment by hashing all files (excluding folders and exclusions)
 /// Uses xxHash (xxh3) for individual files, then XORs all hashes together
