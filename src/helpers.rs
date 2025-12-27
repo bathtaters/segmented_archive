@@ -6,8 +6,10 @@ use std::process::Command;
 use std::io;
 use std::io::{BufRead, BufReader};
 use std::fs;
+use std::collections::HashSet;
 use log::{info,warn};
 use globset::{GlobSet, GlobSetBuilder};
+use walkdir::WalkDir;
 use crate::rolling_writer::RollingWriter;
 
 const PATH_FILE: &str = ".seg_arc.path";
@@ -101,41 +103,98 @@ fn append_dir_contents(
     exclusions: &[&PathBuf],
     ignore_patterns: Option<&GlobSet>,
 ) -> Result<()> {
-    let mut is_empty = true;
 
-    for entry in fs::read_dir(current_dir)? {
-        is_empty = false;
-        let entry = entry?;
+    let base_iter = WalkDir::new(current_dir).follow_links(false).into_iter();
+    
+    let iter: Box<dyn Iterator<Item = Result<walkdir::DirEntry, walkdir::Error>>> = 
+        if !exclusions.is_empty() || ignore_patterns.is_some() {
+            // Filter before traversal to skip ignored/excluded directories
+            Box::new(base_iter.filter_entry(move |entry| {
+                let path = entry.path();
+                
+                if is_excluded(path, exclusions) {
+                    return false;
+                }
+                
+                if let Some(patterns) = ignore_patterns {
+                    if patterns.is_match(path) {
+                        return false;
+                    }
+                }
+                
+                true
+            }))
+        } else {
+            // No filtering, use basic iterator
+            Box::new(base_iter)
+        };
+    
+    // Collect all entries
+    let entries: Vec<walkdir::DirEntry> = iter
+        .filter_map(|entry| {
+            match entry {
+                Ok(e) => {
+                    let path = e.path();
+                    // Skip excluded/ignored files (filter_entry only filters directories)
+                    if is_excluded(path, exclusions) {
+                        return None;
+                    }
+                    if let Some(patterns) = ignore_patterns {
+                        if patterns.is_match(path) {
+                            return None;
+                        }
+                    }
+                    Some(e)
+                }
+                Err(_) => None,
+            }
+        })
+        .collect();
+    
+    // Track for determining empty directories
+    let mut all_dirs: HashSet<PathBuf> = HashSet::new();
+    let mut non_empty_dirs: HashSet<PathBuf> = HashSet::new();
+    
+    // Process all entries
+    for entry in entries {
         let path = entry.path();
-
-        // Skip already archived paths
-        if is_excluded(&path, exclusions) {
-            info!("Skipping excluded path recursively: {:?}", path);
-            continue;
-        }
-
-        // Check if path matches any ignore pattern
-        if let Some(patterns) = ignore_patterns {
-            if patterns.is_match(&path) {
-                info!("Skipping ignored path: {:?}", path);
-                continue;
+        let file_type = entry.file_type();
+        
+        if file_type.is_dir() {
+            // Add to tracking sets -- marking parent dir as non-empty
+            let dir_path = path.to_path_buf();
+            if dir_path != base_dir && dir_path.starts_with(base_dir) {
+                all_dirs.insert(dir_path.clone());
+                if let Some(parent) = path.parent() {
+                    if parent != base_dir && parent.starts_with(base_dir) {
+                        non_empty_dirs.insert(parent.to_path_buf());
+                    }
+                }
+            }
+        } else if file_type.is_file() || file_type.is_symlink() {
+            // Add file/symlink to archive
+            append_file(tar, path, base_dir)?;
+            
+            // Still marking parent dir as non-empty
+            if let Some(parent) = path.parent() {
+                if parent != base_dir && parent.starts_with(base_dir) {
+                    non_empty_dirs.insert(parent.to_path_buf());
+                }
             }
         }
-
-        // Recursively append all files
-        if path.is_dir() {
-            append_dir_contents(tar, base_dir, &path, exclusions, ignore_patterns)?;
-        } else {
-            append_file(tar, &path, base_dir)?;
+    }
+    
+    // Add empty directories to the archive
+    let empty_dirs: Vec<PathBuf> = all_dirs
+        .difference(&non_empty_dirs)
+        .cloned()
+        .collect();
+    for dir_path in empty_dirs {
+        if let Ok(relative_path) = dir_path.strip_prefix(base_dir) {
+            tar.append_dir(relative_path, &dir_path)?;
         }
     }
-
-    // Add empty directory to the archive (Except the root, which is added by default)
-    if is_empty && current_dir != base_dir {
-        if let Ok(relative_path) = current_dir.strip_prefix(base_dir) {
-            tar.append_dir(relative_path, current_dir)?;
-        }
-    }
+    
     Ok(())
 }
 
