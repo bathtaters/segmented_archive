@@ -98,10 +98,12 @@ fn hash_file(file_path: &Path, relative_path: &Path) -> Result<u64> {
     hasher.update(path_str.as_bytes());
     
     // Check if this is a symlink
-    let metadata = fs::symlink_metadata(file_path)
-        .context(format!("Failed to read metadata for: {:?}", file_path))?;
+    let is_symlink = match fs::symlink_metadata(file_path) {
+        Ok(m) => m.file_type().is_symlink(),
+        Err(_) => false,
+    };
     
-    if metadata.file_type().is_symlink() {
+    if is_symlink {
         // For symlinks, hash the target path string (not the target file)
         let target = fs::read_link(file_path)
             .context(format!("Failed to read symlink target: {:?}", file_path))?;

@@ -7,7 +7,7 @@ use std::io;
 use std::io::{BufRead, BufReader};
 use std::fs;
 use std::collections::HashSet;
-use log::{info,warn};
+use log::{info,warn,error};
 use globset::{GlobSet, GlobSetBuilder};
 use walkdir::WalkDir;
 use crate::rolling_writer::RollingWriter;
@@ -127,12 +127,17 @@ fn append_dir_contents(
             }
         } else if file_type.is_file() || file_type.is_symlink() {
             // Add file/symlink to archive
-            append_file(tar, path, base_dir)?;
-            
-            // Still marking parent dir as non-empty
-            if let Some(parent) = path.parent() {
-                if parent != base_dir && parent.starts_with(base_dir) {
-                    non_empty_dirs.insert(parent.to_path_buf());
+            match append_file(tar, path, base_dir) {
+                Ok(_) => {
+                    // Mark parent dir as not-empty
+                    if let Some(parent) = path.parent() {
+                        if parent != base_dir && parent.starts_with(base_dir) {
+                            non_empty_dirs.insert(parent.to_path_buf());
+                        }
+                    }
+                }
+                Err(e) => {
+                    error!("Failed to add file to archive, skipping: {} - {}", path.display(), e);
                 }
             }
         }
@@ -156,13 +161,15 @@ fn append_dir_contents(
 fn append_file(tar: &mut tar::Builder<GzEncoder<RollingWriter>>, path: &Path, base_dir: &Path) -> Result<()> {
     // Correctly map path relative to the archive root
     let relative_path = path.strip_prefix(base_dir)
-    .context(format!("Failed to get relative path for {:?}", path))?;
+        .context(format!("Failed to get relative path for {:?}", path))?;
 
     // Check if this is a symlink
-    let metadata = fs::symlink_metadata(&path)
-        .context(format!("Failed to read metadata for: {:?}", path))?;
+    let is_symlink = match fs::symlink_metadata(&path) {
+        Ok(m) => m.file_type().is_symlink(),
+        Err(_) => false,
+    };
 
-    if metadata.file_type().is_symlink() {
+    if is_symlink {
         // Handle symlinks (including broken ones)
         let target = fs::read_link(&path)
             .context(format!("Failed to read symlink target: {:?}", path))?;

@@ -112,7 +112,13 @@ fn main() -> Result<()> {
         let exclusions = get_exclusions(&all_paths, path);
 
         // Read metadata for hashing/archiving
-        let metadata = fs::metadata(path).context(format!("Failed to read metadata for: {:?}", path))?;
+        let metadata = match fs::metadata(path) {
+            Ok(m) => m,
+            Err(e) => {
+                error!("Failed to read metadata for segment root, skipping segment '{}': {:?} - {}", name, path, e);
+                continue;
+            }
+        };
 
         // Compute and store segment hash
         match compute_segment_hash(path, &metadata, &exclusions, ignore_matcher.as_ref()) {
