@@ -15,6 +15,7 @@ pub struct RollingWriter {
     base_path: PathBuf,
     part_counter: u32,
     rollover_listener: Option<Box<dyn Fn(&String) -> io::Result<i32>>>,
+    failed_parts: Vec<String>,
 }
 
 impl RollingWriter {
@@ -45,6 +46,7 @@ impl RollingWriter {
             base_path,
             part_counter: 0,
             rollover_listener: None,
+            failed_parts: Vec::new(),
         };
         writer.open_new_part()?;
         Ok(writer)
@@ -54,6 +56,11 @@ impl RollingWriter {
     pub fn set_listener<F>(&mut self, callback: F)
     where F: Fn(&String) -> io::Result<i32> + 'static {
         self.rollover_listener = Some(Box::new(callback));
+    }
+
+    /// Parts for which the listener returned a non-zero code (so far)
+    pub fn failed_parts(&self) -> &[String] {
+        &self.failed_parts
     }
 
     /// Close out any open file part
@@ -111,7 +118,9 @@ impl RollingWriter {
             // If a callback is set, call it passing the filename
             if let Some(callback) = &self.rollover_listener {
                 if let Some(filename) = &self.current_path {
-                    callback(filename)?;
+                    if callback(filename)? != 0 {
+                        self.failed_parts.push(filename.clone());
+                    }
                 }
             }
         }
@@ -333,6 +342,25 @@ mod tests {
         let calls = callback_calls.lock().unwrap();
         assert_eq!(calls.len(), 3); // part001, part002, part003
         
+        cleanup_test_dir(test_name);
+    }
+
+    #[test]
+    fn test_rolling_writer_records_failed_parts() {
+        let test_name = "failed_parts";
+        setup_test_dir(test_name);
+
+        let base_path = get_test_dir(test_name).join("test.tar.gz");
+        let mut writer = RollingWriter::new(base_path, Some(50)).unwrap();
+        // Fail only the 2nd part
+        writer.set_listener(|filename| Ok(if filename.ends_with(".part002") { 1 } else { 0 }));
+
+        writer.write_all(&vec![0u8; 120]).unwrap();
+        writer.finalize().unwrap();
+
+        assert_eq!(writer.failed_parts().len(), 1);
+        assert!(writer.failed_parts()[0].ends_with(".part002"));
+
         cleanup_test_dir(test_name);
     }
 

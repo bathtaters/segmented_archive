@@ -38,6 +38,8 @@ pub fn build_ignore_matcher(patterns: &[String]) -> Result<Option<GlobSet>> {
 }
 
 /// Archives a file or directory, appending a path file and applying exclusions.
+///
+/// Returns parts the post-script reported a failure for, or an empty list on success.
 pub fn create_archive(
     src_dir: &Path,
     metadata: &fs::Metadata,
@@ -48,7 +50,7 @@ pub fn create_archive(
     compression_level: Option<u32>,
     max_size_bytes: Option<usize>,
     script_path: Option<PathBuf>
-) -> Result<()> {
+) -> Result<Vec<String>> {
     // Configure tar compression
     let comp = match compression_level {
         Some(level) => {
@@ -91,7 +93,7 @@ pub fn create_archive(
     tar.finish().context("Failed to finalize tar archive")?;
     let mut writer = tar.into_inner()?.finish().context("Failed to finalize Gzip encoding")?;
     writer.finalize()?;
-    Ok(())
+    Ok(writer.failed_parts().to_vec())
 }
 
 
@@ -927,6 +929,120 @@ mod tests {
             assert!(content.contains(test_arg), "Script should receive the argument");
         }
         
+        cleanup_test_dir(test_name);
+    }
+
+    /// Writes an executable post-script that logs each argument and exits with `exit_expr`
+    /// (a bash expression evaluated per call, with the archive path in $1).
+    #[cfg(unix)]
+    fn write_logging_script(test_dir: &Path, exit_expr: &str) -> (PathBuf, PathBuf) {
+        use std::os::unix::fs::PermissionsExt;
+        let script_path = test_dir.join("post.sh");
+        let log_path = test_dir.join("calls.log");
+        let content = format!(
+            "#!/bin/bash\necho \"$1\" >> {:?}\n{}\n",
+            log_path, exit_expr
+        );
+        fs::write(&script_path, content).unwrap();
+        fs::set_permissions(&script_path, fs::Permissions::from_mode(0o755)).unwrap();
+        (script_path, log_path)
+    }
+
+    /// Creates a source dir of incompressible data so a small max size yields several parts.
+    #[cfg(unix)]
+    fn setup_multipart_source(test_dir: &Path) -> PathBuf {
+        let src_dir = test_dir.join("src");
+        fs::create_dir_all(&src_dir).unwrap();
+        let mut state: u32 = 12345;
+        for i in 0..3 {
+            let data: Vec<u8> = (0..20_000).map(|_| {
+                state = state.wrapping_mul(1664525).wrapping_add(1013904223);
+                (state >> 24) as u8
+            }).collect();
+            fs::write(src_dir.join(format!("file{}.bin", i)), data).unwrap();
+        }
+        src_dir
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_create_archive_reports_failed_parts_and_continues() {
+        let test_name = "archive_failed_parts";
+        let test_dir = setup_test_dir(test_name);
+        let src_dir = setup_multipart_source(&test_dir);
+        let out_dir = test_dir.join("out");
+        fs::create_dir_all(&out_dir).unwrap();
+        let archive_path = out_dir.join("test.tar.gz");
+        let metadata = fs::metadata(&src_dir).unwrap();
+
+        // Fails (exit 1) only for part002
+        let (script, log) = write_logging_script(&test_dir, "[[ \"$1\" == *.part002 ]] && exit 1; exit 0");
+
+        let failed = create_archive(
+            &src_dir, &metadata, &archive_path, &None, &[], None,
+            Some(6), Some(8192), Some(script),
+        ).unwrap();
+
+        let calls = fs::read_to_string(&log).unwrap();
+        let call_count = calls.lines().count();
+        assert!(call_count >= 3, "Expected several parts, got {}", call_count);
+        assert!(calls.lines().any(|l| l.ends_with(".part001")));
+        assert!(calls.lines().last().unwrap().ends_with(&format!(".part{:03}", call_count)),
+            "Script should still be called for every part after a failure");
+        assert_eq!(failed.len(), 1, "Only one part should be reported failed: {:?}", failed);
+        assert!(failed[0].ends_with(".part002"));
+
+        cleanup_test_dir(test_name);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_create_archive_reports_no_failures_on_success() {
+        let test_name = "archive_no_failed_parts";
+        let test_dir = setup_test_dir(test_name);
+        let src_dir = setup_multipart_source(&test_dir);
+        let out_dir = test_dir.join("out");
+        fs::create_dir_all(&out_dir).unwrap();
+        let archive_path = out_dir.join("test.tar.gz");
+        let metadata = fs::metadata(&src_dir).unwrap();
+
+        let (script, _log) = write_logging_script(&test_dir, "exit 0");
+        let failed = create_archive(
+            &src_dir, &metadata, &archive_path, &None, &[], None,
+            Some(6), Some(8192), Some(script),
+        ).unwrap();
+        assert!(failed.is_empty(), "No failures expected: {:?}", failed);
+
+        // And with no script at all
+        let failed = create_archive(
+            &src_dir, &metadata, &archive_path, &None, &[], None,
+            Some(6), Some(8192), None,
+        ).unwrap();
+        assert!(failed.is_empty());
+
+        cleanup_test_dir(test_name);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_create_archive_aborts_on_panic_exit_code() {
+        let test_name = "archive_panic_code";
+        let test_dir = setup_test_dir(test_name);
+        let src_dir = setup_multipart_source(&test_dir);
+        let out_dir = test_dir.join("out");
+        fs::create_dir_all(&out_dir).unwrap();
+        let archive_path = out_dir.join("test.tar.gz");
+        let metadata = fs::metadata(&src_dir).unwrap();
+
+        let (script, log) = write_logging_script(&test_dir, "exit 255");
+        let result = create_archive(
+            &src_dir, &metadata, &archive_path, &None, &[], None,
+            Some(6), Some(8192), Some(script),
+        );
+        assert!(result.is_err(), "Exit code >= 128 must still abort the run");
+        assert_eq!(fs::read_to_string(&log).unwrap().lines().count(), 1,
+            "No further parts should be processed after a panic code");
+
         cleanup_test_dir(test_name);
     }
 

@@ -85,6 +85,9 @@ fn main() -> Result<()> {
 
     let all_paths: HashSet<&PathBuf> = segments.values().collect();
 
+    // Segments where a script reported a failure (the run continues, but exits non-zero at the end)
+    let mut failures: Vec<String> = Vec::new();
+
     // Build ignore pattern matcher if patterns are provided
     let ignore_matcher = ignore.as_ref()
         .map_or_else(|| Ok(None), |patterns| build_ignore_matcher(patterns))
@@ -102,6 +105,7 @@ fn main() -> Result<()> {
         info!("--- Processing Section: {} at {:?} ---", name, path);
         if !path.exists() {
             error!("Path not found, skipping: {:?}", path);
+            failures.push(format!("{} (path not found)", name));
             continue;
         }
 
@@ -116,6 +120,7 @@ fn main() -> Result<()> {
             Ok(m) => m,
             Err(e) => {
                 error!("Failed to read metadata for segment root, skipping segment '{}': {:?} - {}", name, path, e);
+                failures.push(format!("{} (metadata unreadable)", name));
                 continue;
             }
         };
@@ -127,7 +132,11 @@ fn main() -> Result<()> {
                     info!("Segment '{}' has not changed, skipping", name);
                     if let Some(ref script) = skip_script {
                         // Execute skip_script if provided
-                        execute_script(script.clone(), &archive_path.display().to_string())?;
+                        let code = execute_script(script.clone(), &archive_path.display().to_string())?;
+                        if code != 0 {
+                            error!("Skip script failed for segment '{}' (exit code {})", name, code);
+                            failures.push(format!("{} (skip script exit code {})", name, code));
+                        }
                     }
                     continue;
                 } else {
@@ -149,7 +158,7 @@ fn main() -> Result<()> {
         }
 
         // Create the archive
-        if let Err(e) = create_archive(
+        let failed_parts = match create_archive(
             path,
             &metadata,
             &archive_path,
@@ -160,11 +169,20 @@ fn main() -> Result<()> {
             max_size_bytes,
             post_script.to_owned(),
         ) {
-            error!("Failed on segment '{}': {}", name, e);
-            return Err(anyhow!("Failed on segment '{}'", name));
-        }
+            Ok(failed_parts) => failed_parts,
+            Err(e) => {
+                error!("Failed on segment '{}': {}", name, e);
+                return Err(anyhow!("Failed on segment '{}'", name));
+            }
+        };
         info!("Successfully created archive: {:?}", archive_path);
-        
+
+        // Don't remember the hash of a segment whose post-script failed, so it is retried next run
+        if forget_failed_segment(&mut segment_hashes, name, &failed_parts) {
+            error!("Post script failed for {} part(s) of segment '{}': {:?}", failed_parts.len(), name, failed_parts);
+            failures.push(format!("{} ({} part(s) failed post script)", name, failed_parts.len()));
+        }
+
         if let Some(hash_file) = &hash_file {
             if let Err(e) = write_hash_file(hash_file, &segment_hashes) {
                 info!("New hashes (You can manually update the hash file if you need to): {:?}", segment_hashes);
@@ -175,8 +193,23 @@ fn main() -> Result<()> {
         }
     }
 
+    if !failures.is_empty() {
+        error!("Backup process finished with {} failed segment(s): {}", failures.len(), failures.join(", "));
+        return Err(anyhow!("{} segment(s) had failures: {}", failures.len(), failures.join(", ")));
+    }
+
     info!("Backup process finished.");
     Ok(())
+}
+
+/// Removes the stored hash of a segment if any of its archive parts failed post-processing,
+/// so the segment is archived again on the next run. Returns true if the segment had failures.
+fn forget_failed_segment(hashes: &mut HashMap<String, String>, name: &str, failed_parts: &[String]) -> bool {
+    if failed_parts.is_empty() {
+        return false;
+    }
+    hashes.remove(name);
+    true
 }
 
 /// Calculate paths to exclude -- extracted to simplify testing
@@ -193,6 +226,27 @@ fn get_exclusions<'a>(all_paths: &'a HashSet<&PathBuf>, path: &PathBuf) -> Vec<&
 mod tests {
     use super::*;
     use std::collections::HashSet;
+
+    #[test]
+    fn test_forget_failed_segment_removes_hash() {
+        let mut hashes = HashMap::from([
+            ("a".to_string(), "111".to_string()),
+            ("b".to_string(), "222".to_string()),
+        ]);
+        let failed = vec!["/out/a.tar.gz.part002".to_string()];
+
+        assert!(forget_failed_segment(&mut hashes, "a", &failed));
+        assert!(!hashes.contains_key("a"), "Failed segment's hash must be dropped");
+        assert_eq!(hashes.get("b").map(String::as_str), Some("222"), "Other segments are untouched");
+    }
+
+    #[test]
+    fn test_forget_failed_segment_keeps_hash_on_success() {
+        let mut hashes = HashMap::from([("a".to_string(), "111".to_string())]);
+
+        assert!(!forget_failed_segment(&mut hashes, "a", &[]));
+        assert_eq!(hashes.get("a").map(String::as_str), Some("111"));
+    }
 
     #[test]
     fn test_exclusion_logic_no_exclusions() {

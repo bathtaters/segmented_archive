@@ -16,7 +16,7 @@ This will go through a series of folders, archive each segment into a tar.gz arc
 2. Create a `post.sh` that will run for each generated archive.
    - Based on [`example_post.sh`](./example_post.sh).
    - **Don't forget to `chmod +x post.sh`**
-   - Return: 0 = success, +int = warning in log, -int = exit with an error.
+   - Return: 0 = success, 1-127 = failure (logged; the run continues, the segment's hash is not saved so it is replaced next run, and the program exits with an error after all segments finish), 128-255 (or negative) = exit immediately with an error.
 3. Run the program, with `config.toml` as the only argument.
 
 ```bash

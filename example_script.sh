@@ -20,5 +20,6 @@ rm -vf "$ARCHIVE_PATH"
 exit 0
 # POSSIBLE EXIT CODES
 #         0 = Success: Continue running
-#   1...127 = Failure: Log & continue running
+#   1...127 = Failure: Log & continue running, hash is not saved,
+#             and program exit is non-zero at the end.
 # 128...255 = Panic:   Stop program completely
