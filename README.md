@@ -23,6 +23,12 @@ This will go through a series of folders, archive each segment into a tar.gz arc
 ./segment_backup ./config.toml
 ```
 
+To check which version of the program you have, run it with `--version` (prints the name and version, then exits):
+
+```bash
+./segment_backup --version
+```
+
 ## Config `.toml`
 
 A config file is required to run this program.

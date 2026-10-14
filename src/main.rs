@@ -36,10 +36,17 @@ struct Config {
 // --- Main Logic ---
 
 fn main() -> Result<()> {
+    let args: Vec<String> = env::args().collect();
+
+    // Print name & version, then exit
+    if args.get(1).map(String::as_str) == Some("--version") {
+        println!("{} {}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+
     let logger = init_logger()?;
 
     // Set config_path to 1st arg (If present)
-    let args: Vec<String> = env::args().collect();
     let config_path = match args.get(1) {
         Some(path_str) => PathBuf::from(path_str),
         None => PathBuf::from(CONFIG_PATH),
